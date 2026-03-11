@@ -10,6 +10,14 @@ baseDir = fileparts(mfilename('fullpath'));  % 获取当前脚本所在目录
 addpath(fullfile(baseDir,'utils'));  % 添加工具函数目录到路径
 rng(1);  % 设置随机数种子，确保结果可重复
 
+% 输出目录（按运行时间归档）
+outRoot = fullfile(baseDir,'out');
+if ~exist(outRoot,'dir'), mkdir(outRoot); end
+runStamp = datestr(now,'yyyymmdd_HHMMSS');
+outdir = fullfile(outRoot,['plot_eta_tradeoff_' runStamp]);
+if ~exist(outdir,'dir'), mkdir(outdir); end
+fprintf('Results will be saved to: %s\n', outdir);
+
 % 系统参数配置
 M = 6;  % 基站天线数
 K = 4;  % 用户数量
@@ -17,6 +25,8 @@ L = 1024;  % 雷达脉冲数
 sigmar2 = 10^(-12);  % 雷达接收噪声功率
 sigmak2 = 10^(-12);  % 通信用户噪声功率
 sigmat2 = 1;  % 目标反射系数方差
+includeRadarInterferenceInRate = false;  % 设为true可计入雷达对通信的干扰
+includeCommInterferenceInRadar = false;  % 设为true可计入通信对雷达的干扰
 P = 10.^(32/10-3);  % 总发射功率 (32dBm转换为瓦特)
 N0 = 64;  % RIS单元数
 
@@ -48,11 +58,11 @@ SNR = zeros(size(etas));  % 存储各η值对应的雷达SNR
 for i = 1:numel(etas)
     e = etas(i);  % 当前功率分配参数
     % 设计波束赋形向量
-    [Wc,wr] = design_w(Hk,Channel0.hdt,P,K,e);  % Wc:通信波束, wr:雷达波束
+    [Wc,wr] = design_w(Hk,Channel0.hdt,Channel0.hrt,Channel0.G,phi,P,K,e);  % Wc:通信波束, wr:雷达波束
     % 计算通信性能指标
-    SR(i) = sum_rate(Hk,Wc,sigmak2);  % 计算通信总速率
+    SR(i) = sum_rate(Hk,Wc,sigmak2,wr,includeRadarInterferenceInRate);  % 计算通信总速率
     % 计算雷达性能指标
-    SNR(i) = radar_snr(Channel0.hdt,Channel0.hrt,Channel0.G,phi,wr,L,sigmat2,sigmar2);
+    SNR(i) = radar_snr(Channel0.hdt,Channel0.hrt,Channel0.G,phi,wr,L,sigmat2,sigmar2,Wc,includeCommInterferenceInRadar);
 end
 
 % 创建图形并设置属性
@@ -120,8 +130,6 @@ annotation('textbox',[0.12 0.01 0.76 0.08],'String', ...
     'HorizontalAlignment','center','EdgeColor','none');  % 居中显示，无边框
 
 % 保存图形到输出目录
-outdir = fullfile(baseDir,'out');  % 输出目录路径
-if ~exist(outdir,'dir'), mkdir(outdir); end  % 若目录不存在则创建
 % 保存为PNG格式，分辨率300dpi
 print(fig, fullfile(outdir,'eta_tradeoff.png'), '-dpng','-r300');
 % 保存为TIFF格式，分辨率300dpi

@@ -11,9 +11,13 @@ if ~any(strcmp(path, utilsDir))
     addpath(utilsDir);
 end
 
-% 输出目录（保存所有图像）
-outDir = fullfile(baseDir,'out');
+% 输出目录（按运行时间归档）
+outRoot = fullfile(baseDir,'out');
+if ~exist(outRoot,'dir'), mkdir(outRoot); end
+runStamp = datestr(now,'yyyymmdd_HHMMSS');
+outDir = fullfile(outRoot,['run_simple_isac_' runStamp]);
 if ~exist(outDir,'dir'), mkdir(outDir); end
+fprintf('Results will be saved to: %s\n', outDir);
 
 % 设置随机数种子，保证结果可重复性
 rng(1);
@@ -25,10 +29,14 @@ L = 1024;           % 雷达脉冲数
 sigmar2 = 10^(-12);  % 雷达接收器噪声功率
 sigmak2 = 10^(-12);  % 通信用户噪声功率
 sigmat2 = 1;        % 目标反射系数的方差
+includeRadarInterferenceInRate = false;  % 设为true可计入雷达对通信的干扰
+includeCommInterferenceInRadar = false;  % 设为true可计入通信对雷达的干扰
 P = 10.^(32/10-3);  % 总发射功率 (32dBm 转换为瓦特)
 N_range = 24:8:64;  % RIS单元数量的变化范围
-gammat = 10^0.7;  % 雷达SNR门限值
 baseline = generate_baseline(M,K);  % 生成基线信道环境
+% 新雷达SNR定义包含回程合并增益，按无RIS基线增益缩放门限，保持与旧口径近似可比
+gammat_legacy = 10^0.7;
+gammat = gammat_legacy*(norm(baseline.hdt)^2);  % 雷达SNR门限值（新口径）
 
 % 初始化性能指标数组 - 用于存储不同RIS相位策略下的性能
 SR_fixed = zeros(1,length(N_range));    % 固定相位策略的总和速率
@@ -42,6 +50,23 @@ SNR_random = zeros(1,length(N_range));  % 随机相位策略的雷达SNR
 SNR_scan_sr = zeros(1,length(N_range)); % 扫描优化速率策略的雷达SNR
 SNR_scan_snr = zeros(1,length(N_range));% 扫描优化SNR策略的雷达SNR
 SNR_noris = zeros(1,length(N_range));   % 无RIS场景的雷达SNR
+
+% 无RIS基准线与N无关，只需计算一次
+Hk_noris = baseline.Hu;
+eta_noris = 0;
+hrt_noris = 0;
+G_noris = zeros(1,size(Hk_noris,2));
+phi_noris = 1;
+for e = 0:0.05:1
+    [Wc_noris_tmp,wr_noris_tmp] = design_w(Hk_noris,baseline.hdt,hrt_noris,G_noris,phi_noris,P,K,e);
+    if radar_snr_noris(baseline.hdt,wr_noris_tmp,L,sigmat2,sigmar2,Wc_noris_tmp,includeCommInterferenceInRadar) >= gammat
+        eta_noris = e;
+        break;
+    end
+end
+[Wc_noris,wr_noris] = design_w(Hk_noris,baseline.hdt,hrt_noris,G_noris,phi_noris,P,K,eta_noris);
+SR_noris_val = sum_rate(Hk_noris,Wc_noris,sigmak2,wr_noris,includeRadarInterferenceInRate);
+SNR_noris_val = radar_snr_noris(baseline.hdt,wr_noris,L,sigmat2,sigmar2,Wc_noris,includeCommInterferenceInRadar);
 
 % 遍历不同的RIS单元数量，评估系统性能随RIS数量的变化
 for idx = 1:length(N_range)
@@ -58,8 +83,8 @@ for idx = 1:length(N_range)
     % 计算不同相位策略下的RIS相位矩阵
     phi_fixed = compute_phi('fixed_target',Channel);    % 固定目标相位
     phi_random = compute_phi('random',Channel);         % 随机相位
-    phi_scan_sr = scan_phi('sumrate',Channel,P,K,L,sigmat2,sigmar2,gammat,sigmak2); % 优化速率的扫描相位
-    phi_scan_snr = scan_phi('snr',Channel,P,K,L,sigmat2,sigmar2,gammat,sigmak2);    % 优化SNR的扫描相位
+    phi_scan_sr = scan_phi('sumrate',Channel,P,K,L,sigmat2,sigmar2,gammat,sigmak2,includeRadarInterferenceInRate,includeCommInterferenceInRadar); % 优化速率的扫描相位
+    phi_scan_snr = scan_phi('snr',Channel,P,K,L,sigmat2,sigmar2,gammat,sigmak2,includeRadarInterferenceInRate,includeCommInterferenceInRadar);    % 优化SNR的扫描相位
     
     % 计算等效信道矩阵（考虑RIS的影响）
     Hk_fixed = Channel.Hu + Channel.Hru*diag(phi_fixed)*Channel.G;
@@ -68,43 +93,34 @@ for idx = 1:length(N_range)
     Hk_scan_snr = Channel.Hu + Channel.Hru*diag(phi_scan_snr)*Channel.G;
     
     % 选择功率分配系数eta（雷达与通信之间的功率分配）
-    eta_fixed = select_eta(gammat,Channel,phi_fixed,P,K,L,sigmat2,sigmar2);
-    eta_random = select_eta(gammat,Channel,phi_random,P,K,L,sigmat2,sigmar2);
-    eta_scan_sr = select_eta(gammat,Channel,phi_scan_sr,P,K,L,sigmat2,sigmar2);
-    eta_scan_snr = select_eta(gammat,Channel,phi_scan_snr,P,K,L,sigmat2,sigmar2);
+    eta_fixed = select_eta(gammat,Channel,phi_fixed,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
+    eta_random = select_eta(gammat,Channel,phi_random,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
+    eta_scan_sr = select_eta(gammat,Channel,phi_scan_sr,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
+    eta_scan_snr = select_eta(gammat,Channel,phi_scan_snr,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
     
     % 设计波束赋形向量（通信和雷达）
-    [Wc_fixed,wr_fixed] = design_w(Hk_fixed,Channel.hdt,P,K,eta_fixed);
-    [Wc_random,wr_random] = design_w(Hk_random,Channel.hdt,P,K,eta_random);
-    [Wc_scan_sr,wr_scan_sr] = design_w(Hk_scan_sr,Channel.hdt,P,K,eta_scan_sr);
-    [Wc_scan_snr,wr_scan_snr] = design_w(Hk_scan_snr,Channel.hdt,P,K,eta_scan_snr);
+    [Wc_fixed,wr_fixed] = design_w(Hk_fixed,Channel.hdt,Channel.hrt,Channel.G,phi_fixed,P,K,eta_fixed);
+    [Wc_random,wr_random] = design_w(Hk_random,Channel.hdt,Channel.hrt,Channel.G,phi_random,P,K,eta_random);
+    [Wc_scan_sr,wr_scan_sr] = design_w(Hk_scan_sr,Channel.hdt,Channel.hrt,Channel.G,phi_scan_sr,P,K,eta_scan_sr);
+    [Wc_scan_snr,wr_scan_snr] = design_w(Hk_scan_snr,Channel.hdt,Channel.hrt,Channel.G,phi_scan_snr,P,K,eta_scan_snr);
     
     % 计算通信性能指标（总和速率）
-    SR_fixed(idx) = sum_rate(Hk_fixed,Wc_fixed,sigmak2);
-    SR_random(idx) = sum_rate(Hk_random,Wc_random,sigmak2);
-    SR_scan_sr(idx) = sum_rate(Hk_scan_sr,Wc_scan_sr,sigmak2);
-    SR_scan_snr(idx) = sum_rate(Hk_scan_snr,Wc_scan_snr,sigmak2);
+    SR_fixed(idx) = sum_rate(Hk_fixed,Wc_fixed,sigmak2,wr_fixed,includeRadarInterferenceInRate);
+    SR_random(idx) = sum_rate(Hk_random,Wc_random,sigmak2,wr_random,includeRadarInterferenceInRate);
+    SR_scan_sr(idx) = sum_rate(Hk_scan_sr,Wc_scan_sr,sigmak2,wr_scan_sr,includeRadarInterferenceInRate);
+    SR_scan_snr(idx) = sum_rate(Hk_scan_snr,Wc_scan_snr,sigmak2,wr_scan_snr,includeRadarInterferenceInRate);
     
     % 计算雷达性能指标（SNR）
-    SNR_fixed(idx) = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_fixed,wr_fixed,L,sigmat2,sigmar2);
-    SNR_random(idx) = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_random,wr_random,L,sigmat2,sigmar2);
-    SNR_scan_sr(idx) = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_scan_sr,wr_scan_sr,L,sigmat2,sigmar2);
-    SNR_scan_snr(idx) = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_scan_snr,wr_scan_snr,L,sigmat2,sigmar2);
+    SNR_fixed(idx) = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_fixed,wr_fixed,L,sigmat2,sigmar2,Wc_fixed,includeCommInterferenceInRadar);
+    SNR_random(idx) = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_random,wr_random,L,sigmat2,sigmar2,Wc_random,includeCommInterferenceInRadar);
+    SNR_scan_sr(idx) = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_scan_sr,wr_scan_sr,L,sigmat2,sigmar2,Wc_scan_sr,includeCommInterferenceInRadar);
+    SNR_scan_snr(idx) = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_scan_snr,wr_scan_snr,L,sigmat2,sigmar2,Wc_scan_snr,includeCommInterferenceInRadar);
     
-    % 无RIS场景的性能计算（使用固定基线环境，独立于N）
-    Hk_noris = baseline.Hu;  % 无RIS时只有直接信道
-    eta_noris = 0;           % 初始化功率分配系数
-    % 搜索满足雷达SNR门限的最小通信功率分配比例
-    for e = 0:0.05:0.5
-        [~,wr_noris_tmp] = design_w(Hk_noris,baseline.hdt,P,K,e);
-        if radar_snr_noris(baseline.hdt,wr_noris_tmp,L,sigmat2,sigmar2) >= gammat
-            eta_noris = e; break;
-        end
-    end
-    [Wc_noris,wr_noris] = design_w(Hk_noris,baseline.hdt,P,K,eta_noris);
-    SR_noris(idx) = sum_rate(Hk_noris,Wc_noris,sigmak2);
-    SNR_noris(idx) = radar_snr_noris(baseline.hdt,wr_noris,L,sigmat2,sigmar2);
 end
+
+% 将No-RIS基准线扩展到全N范围
+SR_noris(:) = SR_noris_val;
+SNR_noris(:) = SNR_noris_val;
 
 % 绘制通信速率随RIS单元数量变化的曲线并保存
 fig1 = figure('Color','w'); 
@@ -157,12 +173,12 @@ for t = 1:length(rhdeltas)
     % 计算等效信道
     Hk_step = Channel0.Hu + Channel0.Hru*diag(phi_step)*Channel0.G;
     % 选择功率分配系数
-    eta_step = select_eta(gammat,Channel0,phi_step,P,K,L,sigmat2,sigmar2);
+    eta_step = select_eta(gammat,Channel0,phi_step,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
     % 设计波束赋形向量
-    [Wc_step,wr_step] = design_w(Hk_step,Channel0.hdt,P,K,eta_step);
+    [Wc_step,wr_step] = design_w(Hk_step,Channel0.hdt,Channel0.hrt,Channel0.G,phi_step,P,K,eta_step);
     % 计算性能指标
-    SR_step(t) = sum_rate(Hk_step,Wc_step,sigmak2);
-    SNR_step(t) = radar_snr(Channel0.hdt,Channel0.hrt,Channel0.G,phi_step,wr_step,L,sigmat2,sigmar2);
+    SR_step(t) = sum_rate(Hk_step,Wc_step,sigmak2,wr_step,includeRadarInterferenceInRate);
+    SNR_step(t) = radar_snr(Channel0.hdt,Channel0.hrt,Channel0.G,phi_step,wr_step,L,sigmat2,sigmar2,Wc_step,includeCommInterferenceInRadar);
 end
 
 % 绘制全局相位对通信速率的影响并保存
@@ -204,9 +220,9 @@ SR_eta = zeros(size(etas)); SNR_eta = zeros(size(etas));
 % 计算不同η值下的系统性能
 for i = 1:numel(etas)
     e = etas(i);
-    [Wc_eta,wr_eta] = design_w(Hk,Channel0.hdt,P,K,e);
-    SR_eta(i) = sum_rate(Hk,Wc_eta,sigmak2);
-    SNR_eta(i) = radar_snr(Channel0.hdt,Channel0.hrt,Channel0.G,phi,wr_eta,L,sigmat2,sigmar2);
+    [Wc_eta,wr_eta] = design_w(Hk,Channel0.hdt,Channel0.hrt,Channel0.G,phi,P,K,e);
+    SR_eta(i) = sum_rate(Hk,Wc_eta,sigmak2,wr_eta,includeRadarInterferenceInRate);
+    SNR_eta(i) = radar_snr(Channel0.hdt,Channel0.hrt,Channel0.G,phi,wr_eta,L,sigmat2,sigmar2,Wc_eta,includeCommInterferenceInRadar);
 end
 
 % 创建η权衡图，设置图形属性和位置

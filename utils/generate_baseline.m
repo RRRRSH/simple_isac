@@ -1,5 +1,4 @@
 function baseline = generate_baseline(M,K)
-rng(1);
 drt = 3; dg = 50; drk = 8;
 alpha_t = 2.4; alpha_k = 3.5;
 theta2 = pi/4; thetar = pi/4;

@@ -1,4 +1,4 @@
-function eta = select_eta(gammat,Channel,phi,P,K,L,sigmat2,sigmar2)
+function eta = select_eta(gammat,Channel,phi,P,K,L,sigmat2,sigmar2,varargin)
 % select_eta - 选择雷达功率分配系数eta
 %   eta = select_eta(gammat,Channel,phi,P,K,L,sigmat2,sigmar2)
 %   选择最小的eta值，使得雷达SNR满足要求gammat
@@ -16,27 +16,41 @@ function eta = select_eta(gammat,Channel,phi,P,K,L,sigmat2,sigmar2)
 %   返回值:
 %       eta - 雷达功率分配系数 [0,1]
 
+% 默认不计入通信对雷达的干扰，保持历史结果兼容
+includeCommInterferenceInRadar = false;
+if ~isempty(varargin)
+    includeCommInterferenceInRadar = varargin{1};
+end
+
 % 计算等效用户信道
 Hk = Channel.Hu + Channel.Hru*diag(phi)*Channel.G;
 
-% 定义eta的搜索范围和步长（0到0.5，步长0.05）
-etas = 0:0.05:0.5;
+% 定义eta的搜索范围和步长（0到1，步长0.05）
+etas = 0:0.05:1;
 
 % 初始化为最大值
 eta = etas(end);
+is_feasible = false;
 
 % 从最小的eta开始搜索，找到满足雷达SNR要求的最小eta
 for e = etas
     % 为当前eta设计波束赋形向量
-    [~,wr] = design_w(Hk,Channel.hdt,P,K,e);
+    [Wc,wr] = design_w(Hk,Channel.hdt,Channel.hrt,Channel.G,phi,P,K,e);
     
     % 计算雷达SNR
-    g = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi,wr,L,sigmat2,sigmar2);
+    g = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi,wr,L,sigmat2,sigmar2, ...
+        Wc,includeCommInterferenceInRadar);
     
     % 如果满足要求，更新eta并退出循环
     if g >= gammat
         eta = e;
+        is_feasible = true;
         break;
     end
+end
+
+if ~is_feasible
+    warning('select_eta:InfeasibleConstraint', ...
+        '感知约束不可行：eta=1时仍无法满足 gammat=%.4g。已返回 eta=1。', gammat);
 end
 end
