@@ -1,0 +1,6 @@
+# Archives generated for result snapshots
+archives/
+
+# MATLAB editor/runtime temporary files
+*.asv
+*.m~
