@@ -11,6 +11,10 @@ if ~any(strcmp(path, utilsDir))
     addpath(utilsDir);
 end
 
+% 输出目录（保存所有图像）
+outDir = fullfile(baseDir,'out');
+if ~exist(outDir,'dir'), mkdir(outDir); end
+
 % 设置随机数种子，保证结果可重复性
 rng(1);
 
@@ -102,8 +106,8 @@ for idx = 1:length(N_range)
     SNR_noris(idx) = radar_snr_noris(baseline.hdt,wr_noris,L,sigmat2,sigmar2);
 end
 
-% 绘制通信速率随RIS单元数量变化的曲线
-figure; 
+% 绘制通信速率随RIS单元数量变化的曲线并保存
+fig1 = figure('Color','w'); 
 plot(N_range,SR_fixed,'-o','LineWidth',1.5,'Color',[0.8,0,0]); hold on;
 plot(N_range,SR_random,'-s','LineWidth',1.5,'Color',[0,0.5,0]);
 plot(N_range,SR_scan_sr,'-^','LineWidth',1.5,'Color',[0.5,0,0.5]);
@@ -114,8 +118,12 @@ xlabel('N'); ylabel('Sum-rate');
 grid on; 
 legend('Fixed','Random','Scan-SR','Scan-SNR','No RIS');
 
-% 绘制雷达SNR随RIS单元数量变化的曲线（dB表示）
-figure; 
+print(fig1, fullfile(outDir,'sumrate_vs_N.png'), '-dpng','-r300');
+print(fig1, fullfile(outDir,'sumrate_vs_N.tiff'), '-dtiff','-r300');
+savefig(fig1, fullfile(outDir,'sumrate_vs_N.fig'));
+
+% 绘制雷达SNR随RIS单元数量变化的曲线（dB表示）并保存
+fig2 = figure('Color','w'); 
 plot(N_range,10*log10(SNR_fixed),'-o','LineWidth',1.5,'Color',[0.8,0,0]); hold on;
 plot(N_range,10*log10(SNR_random),'-s','LineWidth',1.5,'Color',[0,0.5,0]);
 plot(N_range,10*log10(SNR_scan_sr),'-^','LineWidth',1.5,'Color',[0.5,0,0.5]);
@@ -125,6 +133,10 @@ hold off;
 xlabel('N'); ylabel('Radar SNR (dB)'); 
 grid on; 
 legend('Fixed','Random','Scan-SR','Scan-SNR','No RIS');
+
+print(fig2, fullfile(outDir,'radar_snr_vs_N.png'), '-dpng','-r300');
+print(fig2, fullfile(outDir,'radar_snr_vs_N.tiff'), '-dtiff','-r300');
+savefig(fig2, fullfile(outDir,'radar_snr_vs_N.fig'));
 
 % 全局相位变化对性能的影响分析部分
 N0 = N_range(end);  % 使用最大的RIS单元数量
@@ -153,8 +165,8 @@ for t = 1:length(rhdeltas)
     SNR_step(t) = radar_snr(Channel0.hdt,Channel0.hrt,Channel0.G,phi_step,wr_step,L,sigmat2,sigmar2);
 end
 
-% 绘制全局相位对通信速率的影响
-figure; 
+% 绘制全局相位对通信速率的影响并保存
+fig3 = figure('Color','w'); 
 plot(rhdeltas,SR_step,'-o','LineWidth',1.5,'Color',[0.8,0,0]); 
 grid on;
 xlabel('Global phase (rad)'); ylabel('Sum-rate');
@@ -162,14 +174,22 @@ xlabel('Global phase (rad)'); ylabel('Sum-rate');
 set(gca,'XTick', 0:pi/4:2*pi);
 set(gca,'XTickLabel', {'0', 'π/4', 'π/2', '3π/4', 'π', '5π/4', '3π/2', '7π/4', '2π'});
 
-% 绘制全局相位对雷达SNR的影响
-figure; 
+print(fig3, fullfile(outDir,'global_phase_sumrate.png'), '-dpng','-r300');
+print(fig3, fullfile(outDir,'global_phase_sumrate.tiff'), '-dtiff','-r300');
+savefig(fig3, fullfile(outDir,'global_phase_sumrate.fig'));
+
+% 绘制全局相位对雷达SNR的影响并保存
+fig4 = figure('Color','w'); 
 plot(rhdeltas,10*log10(SNR_step),'-o','LineWidth',1.5,'Color',[0,0.5,0]); 
 grid on;
 xlabel('Global phase (rad)'); ylabel('Radar SNR (dB)');
 % 设置横坐标刻度
 set(gca,'XTick', 0:pi/4:2*pi);
 set(gca,'XTickLabel', {'0', 'π/4', 'π/2', '3π/4', 'π', '5π/4', '3π/2', '7π/4', '2π'});
+
+print(fig4, fullfile(outDir,'global_phase_radarsnr.png'), '-dpng','-r300');
+print(fig4, fullfile(outDir,'global_phase_radarsnr.tiff'), '-dtiff','-r300');
+savefig(fig4, fullfile(outDir,'global_phase_radarsnr.fig'));
 
 % η权衡图（上下堆放）- 分析功率分配系数对通信和雷达性能的影响
 N0 = N_range(end);
@@ -229,8 +249,7 @@ patch([0.6 1 1 0.6],[yl2(1) yl2(1) yl2(2) yl2(2)], [0.9 0.9 0.9],'FaceAlpha',0.2
 text(0.8,yl2(1)+(yl2(2)-yl2(1))*0.1,'感知优先','HorizontalAlignment','center');
 
 % 保存结果图片
-outdir_eta = fullfile(baseDir,'out'); 
-if ~exist(outdir_eta,'dir'), mkdir(outdir_eta); end  % 确保输出目录存在
-print(fig_eta, fullfile(outdir_eta,'eta_tradeoff.png'), '-dpng','-r300');
-print(fig_eta, fullfile(outdir_eta,'eta_tradeoff.tiff'), '-dtiff','-r300');
+print(fig_eta, fullfile(outDir,'eta_tradeoff.png'), '-dpng','-r300');
+print(fig_eta, fullfile(outDir,'eta_tradeoff.tiff'), '-dtiff','-r300');
+savefig(fig_eta, fullfile(outDir,'eta_tradeoff.fig'));
 end
