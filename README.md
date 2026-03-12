@@ -74,6 +74,11 @@
 额外归档（手动打包）可放在：
 - archives/out_snapshot_YYYYMMDD_HHMMSS.zip
 
+仓库管理说明：
+- archives/ 已加入 .gitignore（默认不纳入版本控制）
+- MATLAB 临时文件 *.asv、*.m~ 已加入 .gitignore
+- 建议将“代码变更”和“结果归档”分离管理：代码用 git，结果用 out/ 与 archives/
+
 ## 对比实验建议
 可做两组实验对照：
 
@@ -91,3 +96,12 @@ B. 完整并发口径（双向干扰）
 - 本项目默认随机种子在顶层脚本中设置（当前为 rng(1)），便于复现实验。
 - 若做蒙特卡洛统计，请在外层循环中控制随机种子策略。
 - 若更换系统参数（M/K/N/P/噪声功率等），建议保留输出目录时间戳机制，避免结果混淆。
+
+## 快速检查清单
+每次改完代码后建议按下面顺序执行：
+
+1. 运行 run_simple_isac.m（或 plot_eta_tradeoff.m）
+2. 确认 out/ 下生成新的时间戳子目录
+3. 对比新旧目录中的关键图（sumrate_vs_N、radar_snr_vs_N、eta_tradeoff）
+4. 如需留档，压缩 out/ 到 archives/out_snapshot_时间戳.zip
+5. 提交代码前确认 git status 干净（结果文件不应进入提交）
