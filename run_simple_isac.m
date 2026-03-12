@@ -1,6 +1,11 @@
-function run_simple_isac()
+function run_simple_isac(varargin)
 % 主函数：运行RIS辅助的ISAC(集成感知与通信)系统仿真
 % 功能：对比不同RIS相位配置策略下的通信速率和雷达性能
+% 用法：
+%   run_simple_isac()                 % 默认同时启用两种模式
+%   run_simple_isac(true,false)       % 仅每个N重采样
+%   run_simple_isac(false,true)       % 仅嵌套固定样本
+%   run_simple_isac(true,true,true,true) % 双模式+双向干扰均计入
 
 % 设置路径管理
 % 获取当前文件所在目录
@@ -31,6 +36,12 @@ sigmak2 = 10^(-12);  % 通信用户噪声功率
 sigmat2 = 1;        % 目标反射系数的方差
 includeRadarInterferenceInRate = false;  % 设为true可计入雷达对通信的干扰
 includeCommInterferenceInRadar = false;  % 设为true可计入通信对雷达的干扰
+if numel(varargin) >= 3
+    includeRadarInterferenceInRate = logical(varargin{3});
+end
+if numel(varargin) >= 4
+    includeCommInterferenceInRadar = logical(varargin{4});
+end
 P = 10.^(32/10-3);  % 总发射功率 (32dBm 转换为瓦特)
 N_range = 24:8:64;  % RIS单元数量的变化范围
 baseline = generate_baseline(M,K);  % 生成基线信道环境
@@ -38,18 +49,55 @@ baseline = generate_baseline(M,K);  % 生成基线信道环境
 gammat_legacy = 10^0.7;
 gammat = gammat_legacy*(norm(baseline.hdt)^2);  % 雷达SNR门限值（新口径）
 
-% 初始化性能指标数组 - 用于存储不同RIS相位策略下的性能
-SR_fixed = zeros(1,length(N_range));    % 固定相位策略的总和速率
-SR_random = zeros(1,length(N_range));   % 随机相位策略的总和速率
-SR_scan_sr = zeros(1,length(N_range));  % 扫描优化速率策略的总和速率
-SR_scan_snr = zeros(1,length(N_range)); % 扫描优化SNR策略的总和速率
-SR_noris = zeros(1,length(N_range));    % 无RIS场景的总和速率
+% 双模式开关：
+% 1) 每个N重采样（原始行为）
+% 2) 嵌套固定样本（先生成max-N，再取前N个单元）
+if numel(varargin) >= 1
+    enableResampleEachN = logical(varargin{1});
+else
+    enableResampleEachN = true;
+end
+if numel(varargin) >= 2
+    enableNestedFixedSample = logical(varargin{2});
+else
+    enableNestedFixedSample = true;
+end
+Nmax = N_range(end);
 
-SNR_fixed = zeros(1,length(N_range));   % 固定相位策略的雷达SNR
-SNR_random = zeros(1,length(N_range));  % 随机相位策略的雷达SNR
-SNR_scan_sr = zeros(1,length(N_range)); % 扫描优化速率策略的雷达SNR
-SNR_scan_snr = zeros(1,length(N_range));% 扫描优化SNR策略的雷达SNR
-SNR_noris = zeros(1,length(N_range));   % 无RIS场景的雷达SNR
+if ~(enableResampleEachN || enableNestedFixedSample)
+    error('至少需要启用一种模式：enableResampleEachN 或 enableNestedFixedSample。');
+end
+
+% 预先生成max-N主样本，用于嵌套固定样本模式
+if enableNestedFixedSample
+    ris_master = generate_ris_parts(Nmax,baseline);
+end
+
+% 初始化性能指标数组（Resample模式）
+SR_resample_fixed = zeros(1,length(N_range));
+SR_resample_random = zeros(1,length(N_range));
+SR_resample_scan_sr = zeros(1,length(N_range));
+SR_resample_scan_snr = zeros(1,length(N_range));
+SR_resample_noris = zeros(1,length(N_range));
+
+SNR_resample_fixed = zeros(1,length(N_range));
+SNR_resample_random = zeros(1,length(N_range));
+SNR_resample_scan_sr = zeros(1,length(N_range));
+SNR_resample_scan_snr = zeros(1,length(N_range));
+SNR_resample_noris = zeros(1,length(N_range));
+
+% 初始化性能指标数组（Nested模式）
+SR_nested_fixed = zeros(1,length(N_range));
+SR_nested_random = zeros(1,length(N_range));
+SR_nested_scan_sr = zeros(1,length(N_range));
+SR_nested_scan_snr = zeros(1,length(N_range));
+SR_nested_noris = zeros(1,length(N_range));
+
+SNR_nested_fixed = zeros(1,length(N_range));
+SNR_nested_random = zeros(1,length(N_range));
+SNR_nested_scan_sr = zeros(1,length(N_range));
+SNR_nested_scan_snr = zeros(1,length(N_range));
+SNR_nested_noris = zeros(1,length(N_range));
 
 % 无RIS基准线与N无关，只需计算一次
 Hk_noris = baseline.Hu;
@@ -68,95 +116,214 @@ end
 SR_noris_val = sum_rate(Hk_noris,Wc_noris,sigmak2,wr_noris,includeRadarInterferenceInRate);
 SNR_noris_val = radar_snr_noris(baseline.hdt,wr_noris,L,sigmat2,sigmar2,Wc_noris,includeCommInterferenceInRadar);
 
-% 遍历不同的RIS单元数量，评估系统性能随RIS数量的变化
+% 遍历不同的RIS单元数量，分别评估两种模式
 for idx = 1:length(N_range)
     N = N_range(idx);  % 当前RIS单元数量
-    
-    % 生成RIS相关部分，并与固定基线组合
-    ris = generate_ris_parts(N,baseline);
-    Channel.hdt = baseline.hdt;  % 基站-目标直接信道
-    Channel.Hu = baseline.Hu;    % 基站-用户直接信道
-    Channel.hrt = ris.hrt;       % RIS-目标信道
-    Channel.G = ris.G;           % 基站-RIS信道
-    Channel.Hru = ris.Hru;       % RIS-用户信道
-    
-    % 计算不同相位策略下的RIS相位矩阵
-    phi_fixed = compute_phi('fixed_target',Channel);    % 固定目标相位
-    phi_random = compute_phi('random',Channel);         % 随机相位
-    phi_scan_sr = scan_phi('sumrate',Channel,P,K,L,sigmat2,sigmar2,gammat,sigmak2,includeRadarInterferenceInRate,includeCommInterferenceInRadar); % 优化速率的扫描相位
-    phi_scan_snr = scan_phi('snr',Channel,P,K,L,sigmat2,sigmar2,gammat,sigmak2,includeRadarInterferenceInRate,includeCommInterferenceInRadar);    % 优化SNR的扫描相位
-    
-    % 计算等效信道矩阵（考虑RIS的影响）
-    Hk_fixed = Channel.Hu + Channel.Hru*diag(phi_fixed)*Channel.G;
-    Hk_random = Channel.Hu + Channel.Hru*diag(phi_random)*Channel.G;
-    Hk_scan_sr = Channel.Hu + Channel.Hru*diag(phi_scan_sr)*Channel.G;
-    Hk_scan_snr = Channel.Hu + Channel.Hru*diag(phi_scan_snr)*Channel.G;
-    
-    % 选择功率分配系数eta（雷达与通信之间的功率分配）
-    eta_fixed = select_eta(gammat,Channel,phi_fixed,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
-    eta_random = select_eta(gammat,Channel,phi_random,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
-    eta_scan_sr = select_eta(gammat,Channel,phi_scan_sr,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
-    eta_scan_snr = select_eta(gammat,Channel,phi_scan_snr,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
-    
-    % 设计波束赋形向量（通信和雷达）
-    [Wc_fixed,wr_fixed] = design_w(Hk_fixed,Channel.hdt,Channel.hrt,Channel.G,phi_fixed,P,K,eta_fixed);
-    [Wc_random,wr_random] = design_w(Hk_random,Channel.hdt,Channel.hrt,Channel.G,phi_random,P,K,eta_random);
-    [Wc_scan_sr,wr_scan_sr] = design_w(Hk_scan_sr,Channel.hdt,Channel.hrt,Channel.G,phi_scan_sr,P,K,eta_scan_sr);
-    [Wc_scan_snr,wr_scan_snr] = design_w(Hk_scan_snr,Channel.hdt,Channel.hrt,Channel.G,phi_scan_snr,P,K,eta_scan_snr);
-    
-    % 计算通信性能指标（总和速率）
-    SR_fixed(idx) = sum_rate(Hk_fixed,Wc_fixed,sigmak2,wr_fixed,includeRadarInterferenceInRate);
-    SR_random(idx) = sum_rate(Hk_random,Wc_random,sigmak2,wr_random,includeRadarInterferenceInRate);
-    SR_scan_sr(idx) = sum_rate(Hk_scan_sr,Wc_scan_sr,sigmak2,wr_scan_sr,includeRadarInterferenceInRate);
-    SR_scan_snr(idx) = sum_rate(Hk_scan_snr,Wc_scan_snr,sigmak2,wr_scan_snr,includeRadarInterferenceInRate);
-    
-    % 计算雷达性能指标（SNR）
-    SNR_fixed(idx) = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_fixed,wr_fixed,L,sigmat2,sigmar2,Wc_fixed,includeCommInterferenceInRadar);
-    SNR_random(idx) = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_random,wr_random,L,sigmat2,sigmar2,Wc_random,includeCommInterferenceInRadar);
-    SNR_scan_sr(idx) = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_scan_sr,wr_scan_sr,L,sigmat2,sigmar2,Wc_scan_sr,includeCommInterferenceInRadar);
-    SNR_scan_snr(idx) = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_scan_snr,wr_scan_snr,L,sigmat2,sigmar2,Wc_scan_snr,includeCommInterferenceInRadar);
-    
+
+    if enableResampleEachN
+        % 模式A：每个N独立重采样RIS相关信道
+        ris = generate_ris_parts(N,baseline);
+        Channel.hdt = baseline.hdt;
+        Channel.Hu = baseline.Hu;
+        Channel.hrt = ris.hrt;
+        Channel.G = ris.G;
+        Channel.Hru = ris.Hru;
+
+        phi_fixed = compute_phi('fixed_target',Channel);
+        phi_random = compute_phi('random',Channel);
+        phi_scan_sr = scan_phi('sumrate',Channel,P,K,L,sigmat2,sigmar2,gammat,sigmak2,includeRadarInterferenceInRate,includeCommInterferenceInRadar);
+        phi_scan_snr = scan_phi('snr',Channel,P,K,L,sigmat2,sigmar2,gammat,sigmak2,includeRadarInterferenceInRate,includeCommInterferenceInRadar);
+
+        Hk_fixed = Channel.Hu + Channel.Hru*diag(phi_fixed)*Channel.G;
+        Hk_random = Channel.Hu + Channel.Hru*diag(phi_random)*Channel.G;
+        Hk_scan_sr = Channel.Hu + Channel.Hru*diag(phi_scan_sr)*Channel.G;
+        Hk_scan_snr = Channel.Hu + Channel.Hru*diag(phi_scan_snr)*Channel.G;
+
+        eta_fixed = select_eta(gammat,Channel,phi_fixed,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
+        eta_random = select_eta(gammat,Channel,phi_random,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
+        eta_scan_sr = select_eta(gammat,Channel,phi_scan_sr,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
+        eta_scan_snr = select_eta(gammat,Channel,phi_scan_snr,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
+
+        [Wc_fixed,wr_fixed] = design_w(Hk_fixed,Channel.hdt,Channel.hrt,Channel.G,phi_fixed,P,K,eta_fixed);
+        [Wc_random,wr_random] = design_w(Hk_random,Channel.hdt,Channel.hrt,Channel.G,phi_random,P,K,eta_random);
+        [Wc_scan_sr,wr_scan_sr] = design_w(Hk_scan_sr,Channel.hdt,Channel.hrt,Channel.G,phi_scan_sr,P,K,eta_scan_sr);
+        [Wc_scan_snr,wr_scan_snr] = design_w(Hk_scan_snr,Channel.hdt,Channel.hrt,Channel.G,phi_scan_snr,P,K,eta_scan_snr);
+
+        SR_resample_fixed(idx) = sum_rate(Hk_fixed,Wc_fixed,sigmak2,wr_fixed,includeRadarInterferenceInRate);
+        SR_resample_random(idx) = sum_rate(Hk_random,Wc_random,sigmak2,wr_random,includeRadarInterferenceInRate);
+        SR_resample_scan_sr(idx) = sum_rate(Hk_scan_sr,Wc_scan_sr,sigmak2,wr_scan_sr,includeRadarInterferenceInRate);
+        SR_resample_scan_snr(idx) = sum_rate(Hk_scan_snr,Wc_scan_snr,sigmak2,wr_scan_snr,includeRadarInterferenceInRate);
+
+        SNR_resample_fixed(idx) = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_fixed,wr_fixed,L,sigmat2,sigmar2,Wc_fixed,includeCommInterferenceInRadar);
+        SNR_resample_random(idx) = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_random,wr_random,L,sigmat2,sigmar2,Wc_random,includeCommInterferenceInRadar);
+        SNR_resample_scan_sr(idx) = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_scan_sr,wr_scan_sr,L,sigmat2,sigmar2,Wc_scan_sr,includeCommInterferenceInRadar);
+        SNR_resample_scan_snr(idx) = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_scan_snr,wr_scan_snr,L,sigmat2,sigmar2,Wc_scan_snr,includeCommInterferenceInRadar);
+    end
+
+    if enableNestedFixedSample
+        % 模式B：从max-N主样本切片，形成可比较的嵌套样本
+        ris = generate_ris_parts(N,baseline,ris_master);
+        Channel.hdt = baseline.hdt;
+        Channel.Hu = baseline.Hu;
+        Channel.hrt = ris.hrt;
+        Channel.G = ris.G;
+        Channel.Hru = ris.Hru;
+
+        phi_fixed = compute_phi('fixed_target',Channel);
+        phi_random = compute_phi('random',Channel);
+        phi_scan_sr = scan_phi('sumrate',Channel,P,K,L,sigmat2,sigmar2,gammat,sigmak2,includeRadarInterferenceInRate,includeCommInterferenceInRadar);
+        phi_scan_snr = scan_phi('snr',Channel,P,K,L,sigmat2,sigmar2,gammat,sigmak2,includeRadarInterferenceInRate,includeCommInterferenceInRadar);
+
+        Hk_fixed = Channel.Hu + Channel.Hru*diag(phi_fixed)*Channel.G;
+        Hk_random = Channel.Hu + Channel.Hru*diag(phi_random)*Channel.G;
+        Hk_scan_sr = Channel.Hu + Channel.Hru*diag(phi_scan_sr)*Channel.G;
+        Hk_scan_snr = Channel.Hu + Channel.Hru*diag(phi_scan_snr)*Channel.G;
+
+        eta_fixed = select_eta(gammat,Channel,phi_fixed,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
+        eta_random = select_eta(gammat,Channel,phi_random,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
+        eta_scan_sr = select_eta(gammat,Channel,phi_scan_sr,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
+        eta_scan_snr = select_eta(gammat,Channel,phi_scan_snr,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
+
+        [Wc_fixed,wr_fixed] = design_w(Hk_fixed,Channel.hdt,Channel.hrt,Channel.G,phi_fixed,P,K,eta_fixed);
+        [Wc_random,wr_random] = design_w(Hk_random,Channel.hdt,Channel.hrt,Channel.G,phi_random,P,K,eta_random);
+        [Wc_scan_sr,wr_scan_sr] = design_w(Hk_scan_sr,Channel.hdt,Channel.hrt,Channel.G,phi_scan_sr,P,K,eta_scan_sr);
+        [Wc_scan_snr,wr_scan_snr] = design_w(Hk_scan_snr,Channel.hdt,Channel.hrt,Channel.G,phi_scan_snr,P,K,eta_scan_snr);
+
+        SR_nested_fixed(idx) = sum_rate(Hk_fixed,Wc_fixed,sigmak2,wr_fixed,includeRadarInterferenceInRate);
+        SR_nested_random(idx) = sum_rate(Hk_random,Wc_random,sigmak2,wr_random,includeRadarInterferenceInRate);
+        SR_nested_scan_sr(idx) = sum_rate(Hk_scan_sr,Wc_scan_sr,sigmak2,wr_scan_sr,includeRadarInterferenceInRate);
+        SR_nested_scan_snr(idx) = sum_rate(Hk_scan_snr,Wc_scan_snr,sigmak2,wr_scan_snr,includeRadarInterferenceInRate);
+
+        SNR_nested_fixed(idx) = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_fixed,wr_fixed,L,sigmat2,sigmar2,Wc_fixed,includeCommInterferenceInRadar);
+        SNR_nested_random(idx) = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_random,wr_random,L,sigmat2,sigmar2,Wc_random,includeCommInterferenceInRadar);
+        SNR_nested_scan_sr(idx) = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_scan_sr,wr_scan_sr,L,sigmat2,sigmar2,Wc_scan_sr,includeCommInterferenceInRadar);
+        SNR_nested_scan_snr(idx) = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_scan_snr,wr_scan_snr,L,sigmat2,sigmar2,Wc_scan_snr,includeCommInterferenceInRadar);
+    end
 end
 
-% 将No-RIS基准线扩展到全N范围
-SR_noris(:) = SR_noris_val;
-SNR_noris(:) = SNR_noris_val;
+% 将No-RIS基准线扩展到全N范围（两种模式共用同一条基准线）
+SR_resample_noris(:) = SR_noris_val;
+SNR_resample_noris(:) = SNR_noris_val;
+SR_nested_noris(:) = SR_noris_val;
+SNR_nested_noris(:) = SNR_noris_val;
 
-% 绘制通信速率随RIS单元数量变化的曲线并保存
-fig1 = figure('Color','w'); 
-plot(N_range,SR_fixed,'-o','LineWidth',1.5,'Color',[0.8,0,0]); hold on;
-plot(N_range,SR_random,'-s','LineWidth',1.5,'Color',[0,0.5,0]);
-plot(N_range,SR_scan_sr,'-^','LineWidth',1.5,'Color',[0.5,0,0.5]);
-plot(N_range,SR_scan_snr,'-v','LineWidth',1.5,'Color',[0.3,0.3,0.3]);
-plot(N_range,SR_noris,'-d','LineWidth',1.5,'Color',[0,0,0.8]); 
-hold off;
-xlabel('N'); ylabel('Sum-rate'); 
-grid on; 
-legend('Fixed','Random','Scan-SR','Scan-SNR','No RIS');
+% 绘图：模式A（每个N重采样）
+if enableResampleEachN
+    fig_sr_resample = figure('Color','w');
+    plot(N_range,SR_resample_fixed,'-o','LineWidth',1.5,'Color',[0.8,0,0]); hold on;
+    plot(N_range,SR_resample_random,'-s','LineWidth',1.5,'Color',[0,0.5,0]);
+    plot(N_range,SR_resample_scan_sr,'-^','LineWidth',1.5,'Color',[0.5,0,0.5]);
+    plot(N_range,SR_resample_scan_snr,'-v','LineWidth',1.5,'Color',[0.3,0.3,0.3]);
+    plot(N_range,SR_resample_noris,'-d','LineWidth',1.5,'Color',[0,0,0.8]);
+    hold off;
+    xlabel('N'); ylabel('Sum-rate');
+    grid on;
+    legend('Fixed','Random','Scan-SR','Scan-SNR','No RIS','Location','best');
+    title('Resample each N');
 
-print(fig1, fullfile(outDir,'sumrate_vs_N.png'), '-dpng','-r300');
-print(fig1, fullfile(outDir,'sumrate_vs_N.tiff'), '-dtiff','-r300');
-savefig(fig1, fullfile(outDir,'sumrate_vs_N.fig'));
+    print(fig_sr_resample, fullfile(outDir,'sumrate_vs_N_resample.png'), '-dpng','-r300');
+    print(fig_sr_resample, fullfile(outDir,'sumrate_vs_N_resample.tiff'), '-dtiff','-r300');
+    savefig(fig_sr_resample, fullfile(outDir,'sumrate_vs_N_resample.fig'));
 
-% 绘制雷达SNR随RIS单元数量变化的曲线（dB表示）并保存
-fig2 = figure('Color','w'); 
-plot(N_range,10*log10(SNR_fixed),'-o','LineWidth',1.5,'Color',[0.8,0,0]); hold on;
-plot(N_range,10*log10(SNR_random),'-s','LineWidth',1.5,'Color',[0,0.5,0]);
-plot(N_range,10*log10(SNR_scan_sr),'-^','LineWidth',1.5,'Color',[0.5,0,0.5]);
-plot(N_range,10*log10(SNR_scan_snr),'-v','LineWidth',1.5,'Color',[0.3,0.3,0.3]);
-plot(N_range,10*log10(SNR_noris),'-d','LineWidth',1.5,'Color',[0,0,0.8]); 
-hold off;
-xlabel('N'); ylabel('Radar SNR (dB)'); 
-grid on; 
-legend('Fixed','Random','Scan-SR','Scan-SNR','No RIS');
+    fig_snr_resample = figure('Color','w');
+    plot(N_range,10*log10(SNR_resample_fixed),'-o','LineWidth',1.5,'Color',[0.8,0,0]); hold on;
+    plot(N_range,10*log10(SNR_resample_random),'-s','LineWidth',1.5,'Color',[0,0.5,0]);
+    plot(N_range,10*log10(SNR_resample_scan_sr),'-^','LineWidth',1.5,'Color',[0.5,0,0.5]);
+    plot(N_range,10*log10(SNR_resample_scan_snr),'-v','LineWidth',1.5,'Color',[0.3,0.3,0.3]);
+    plot(N_range,10*log10(SNR_resample_noris),'-d','LineWidth',1.5,'Color',[0,0,0.8]);
+    hold off;
+    xlabel('N'); ylabel('Radar SNR (dB)');
+    grid on;
+    legend('Fixed','Random','Scan-SR','Scan-SNR','No RIS','Location','best');
+    title('Resample each N');
 
-print(fig2, fullfile(outDir,'radar_snr_vs_N.png'), '-dpng','-r300');
-print(fig2, fullfile(outDir,'radar_snr_vs_N.tiff'), '-dtiff','-r300');
-savefig(fig2, fullfile(outDir,'radar_snr_vs_N.fig'));
+    print(fig_snr_resample, fullfile(outDir,'radar_snr_vs_N_resample.png'), '-dpng','-r300');
+    print(fig_snr_resample, fullfile(outDir,'radar_snr_vs_N_resample.tiff'), '-dtiff','-r300');
+    savefig(fig_snr_resample, fullfile(outDir,'radar_snr_vs_N_resample.fig'));
+end
+
+% 绘图：模式B（嵌套固定样本）
+if enableNestedFixedSample
+    fig_sr_nested = figure('Color','w');
+    plot(N_range,SR_nested_fixed,'-o','LineWidth',1.5,'Color',[0.8,0,0]); hold on;
+    plot(N_range,SR_nested_random,'-s','LineWidth',1.5,'Color',[0,0.5,0]);
+    plot(N_range,SR_nested_scan_sr,'-^','LineWidth',1.5,'Color',[0.5,0,0.5]);
+    plot(N_range,SR_nested_scan_snr,'-v','LineWidth',1.5,'Color',[0.3,0.3,0.3]);
+    plot(N_range,SR_nested_noris,'-d','LineWidth',1.5,'Color',[0,0,0.8]);
+    hold off;
+    xlabel('N'); ylabel('Sum-rate');
+    grid on;
+    legend('Fixed','Random','Scan-SR','Scan-SNR','No RIS','Location','best');
+    title('Nested fixed sample');
+
+    print(fig_sr_nested, fullfile(outDir,'sumrate_vs_N_nested.png'), '-dpng','-r300');
+    print(fig_sr_nested, fullfile(outDir,'sumrate_vs_N_nested.tiff'), '-dtiff','-r300');
+    savefig(fig_sr_nested, fullfile(outDir,'sumrate_vs_N_nested.fig'));
+
+    fig_snr_nested = figure('Color','w');
+    plot(N_range,10*log10(SNR_nested_fixed),'-o','LineWidth',1.5,'Color',[0.8,0,0]); hold on;
+    plot(N_range,10*log10(SNR_nested_random),'-s','LineWidth',1.5,'Color',[0,0.5,0]);
+    plot(N_range,10*log10(SNR_nested_scan_sr),'-^','LineWidth',1.5,'Color',[0.5,0,0.5]);
+    plot(N_range,10*log10(SNR_nested_scan_snr),'-v','LineWidth',1.5,'Color',[0.3,0.3,0.3]);
+    plot(N_range,10*log10(SNR_nested_noris),'-d','LineWidth',1.5,'Color',[0,0,0.8]);
+    hold off;
+    xlabel('N'); ylabel('Radar SNR (dB)');
+    grid on;
+    legend('Fixed','Random','Scan-SR','Scan-SNR','No RIS','Location','best');
+    title('Nested fixed sample');
+
+    print(fig_snr_nested, fullfile(outDir,'radar_snr_vs_N_nested.png'), '-dpng','-r300');
+    print(fig_snr_nested, fullfile(outDir,'radar_snr_vs_N_nested.tiff'), '-dtiff','-r300');
+    savefig(fig_snr_nested, fullfile(outDir,'radar_snr_vs_N_nested.fig'));
+end
+
+% 额外对比图：仅比较Fixed策略在两种模式下的差异
+if enableResampleEachN && enableNestedFixedSample
+    fig_fixed_sr_compare = figure('Color','w');
+    plot(N_range,SR_resample_fixed,'-o','LineWidth',1.5,'Color',[0.8,0,0]); hold on;
+    plot(N_range,SR_nested_fixed,'-s','LineWidth',1.5,'Color',[0,0.5,0]);
+    plot(N_range,SR_resample_noris,'-d','LineWidth',1.5,'Color',[0,0,0.8]);
+    hold off;
+    xlabel('N'); ylabel('Sum-rate');
+    grid on;
+    legend('Fixed (Resample each N)','Fixed (Nested sample)','No RIS','Location','best');
+    title('Fixed phase: channel sampling mode comparison');
+
+    print(fig_fixed_sr_compare, fullfile(outDir,'fixed_sumrate_mode_compare.png'), '-dpng','-r300');
+    print(fig_fixed_sr_compare, fullfile(outDir,'fixed_sumrate_mode_compare.tiff'), '-dtiff','-r300');
+    savefig(fig_fixed_sr_compare, fullfile(outDir,'fixed_sumrate_mode_compare.fig'));
+
+    fig_fixed_snr_compare = figure('Color','w');
+    plot(N_range,10*log10(SNR_resample_fixed),'-o','LineWidth',1.5,'Color',[0.8,0,0]); hold on;
+    plot(N_range,10*log10(SNR_nested_fixed),'-s','LineWidth',1.5,'Color',[0,0.5,0]);
+    plot(N_range,10*log10(SNR_resample_noris),'-d','LineWidth',1.5,'Color',[0,0,0.8]);
+    hold off;
+    xlabel('N'); ylabel('Radar SNR (dB)');
+    grid on;
+    legend('Fixed (Resample each N)','Fixed (Nested sample)','No RIS','Location','best');
+    title('Fixed phase: channel sampling mode comparison');
+
+    print(fig_fixed_snr_compare, fullfile(outDir,'fixed_radarsnr_mode_compare.png'), '-dpng','-r300');
+    print(fig_fixed_snr_compare, fullfile(outDir,'fixed_radarsnr_mode_compare.tiff'), '-dtiff','-r300');
+    savefig(fig_fixed_snr_compare, fullfile(outDir,'fixed_radarsnr_mode_compare.fig'));
+end
+
+% 保存关键数组，便于后处理和论文作图
+save(fullfile(outDir,'mode_compare_results.mat'), ...
+    'N_range', ...
+    'SR_resample_fixed','SR_resample_random','SR_resample_scan_sr','SR_resample_scan_snr','SR_resample_noris', ...
+    'SNR_resample_fixed','SNR_resample_random','SNR_resample_scan_sr','SNR_resample_scan_snr','SNR_resample_noris', ...
+    'SR_nested_fixed','SR_nested_random','SR_nested_scan_sr','SR_nested_scan_snr','SR_nested_noris', ...
+    'SNR_nested_fixed','SNR_nested_random','SNR_nested_scan_sr','SNR_nested_scan_snr','SNR_nested_noris', ...
+    'enableResampleEachN','enableNestedFixedSample');
 
 % 全局相位变化对性能的影响分析部分
 N0 = N_range(end);  % 使用最大的RIS单元数量
-ris0 = generate_ris_parts(N0,baseline);  % 基于基线生成RIS部分
+if enableNestedFixedSample
+    ris0 = generate_ris_parts(N0,baseline,ris_master);
+else
+    ris0 = generate_ris_parts(N0,baseline);  % 基于基线生成RIS部分
+end
 Channel0.hdt = baseline.hdt; Channel0.Hu = baseline.Hu;
 Channel0.hrt = ris0.hrt; Channel0.G = ris0.G; Channel0.Hru = ris0.Hru;
 phi_base = compute_phi('fixed_target',Channel0);  % 基于目标的基础相位
@@ -209,7 +376,11 @@ savefig(fig4, fullfile(outDir,'global_phase_radarsnr.fig'));
 
 % η权衡图（上下堆放）- 分析功率分配系数对通信和雷达性能的影响
 N0 = N_range(end);
-ris0 = generate_ris_parts(N0,baseline);
+if enableNestedFixedSample
+    ris0 = generate_ris_parts(N0,baseline,ris_master);
+else
+    ris0 = generate_ris_parts(N0,baseline);
+end
 Channel0.hdt = baseline.hdt; Channel0.Hu = baseline.Hu;
 Channel0.hrt = ris0.hrt; Channel0.G = ris0.G; Channel0.Hru = ris0.Hru;
 phi = compute_phi('fixed_target',Channel0);
