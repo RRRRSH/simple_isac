@@ -49,7 +49,8 @@ for k = 1:K
 
     % 可选：计入雷达波束泄漏对通信用户的干扰
     if includeRadarInterference && ~isempty(wr)
-        den = den + abs(Hk(k,:)*wr)^2;
+        % 兼容单雷达波束(Mx1)与多雷达波束(MxNr)两种输入
+        den = den + sum(abs(Hk(k,:)*wr).^2);
     end
     
     % 计算用户k的速率（香农容量）并累加

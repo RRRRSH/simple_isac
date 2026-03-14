@@ -132,7 +132,5 @@ annotation('textbox',[0.12 0.01 0.76 0.08],'String', ...
 % 保存图形到输出目录
 % 保存为PNG格式，分辨率300dpi
 print(fig, fullfile(outdir,'eta_tradeoff.png'), '-dpng','-r300');
-% 保存为TIFF格式，分辨率300dpi
-print(fig, fullfile(outdir,'eta_tradeoff.tiff'), '-dtiff','-r300');
 
 end

@@ -1,6 +1,9 @@
 # Archives generated for result snapshots
 archives/
 
+# Simulation/plot outputs (keep local only)
+out/
+
 # MATLAB editor/runtime temporary files
 *.asv
 *.m~

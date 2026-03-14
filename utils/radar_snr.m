@@ -32,13 +32,13 @@ if ~isempty(varargin)
 end
 
 h_forward = hdt.' + hrt.'*diag(phi)*G; % 基站 -> 目标 (1xM)
-a_target = h_forward * wr;             % 目标处的雷达信号强度
+a_target = h_forward * wr;             % 目标处雷达信号（可为1xNr）
 
 % 假设单站雷达，回程信道是去程的转置
 h_backward = h_forward.';              % 目标 -> 基站 (Mx1)
 
-% 信号项：雷达波束回波功率
-signal = L * sigmat2 * abs(a_target)^2 * (norm(h_backward)^2);
+% 信号项：多个雷达波束时按总发射功率叠加
+signal = L * sigmat2 * sum(abs(a_target).^2) * (norm(h_backward)^2);
 
 % 干扰项：可选计入通信波束回波功率
 interference = 0;

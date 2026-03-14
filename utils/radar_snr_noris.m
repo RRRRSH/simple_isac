@@ -35,7 +35,7 @@ a_target = h_forward*wr;
 % 单站雷达下，回程信道与去程互易
 h_backward = h_forward.';
 
-signal = L*sigmat2*abs(a_target)^2*(norm(h_backward)^2);
+signal = L*sigmat2*sum(abs(a_target).^2)*(norm(h_backward)^2);
 interference = 0;
 if includeCommInterference && ~isempty(Wc)
 	interference = L*sigmat2*sum(abs(h_forward*Wc).^2)*(norm(h_backward)^2);
