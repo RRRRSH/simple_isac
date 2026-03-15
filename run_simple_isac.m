@@ -57,9 +57,8 @@ end
 P = 10.^(32/10-3);  % 总发射功率 (32dBm 转换为瓦特)
 N_range = 24:8:64;  % RIS单元数量的变化范围
 baseline = generate_baseline(M,K);  % 生成基线信道环境
-% 新雷达SNR定义包含回程合并增益，按无RIS基线增益缩放门限，保持与旧口径近似可比
-gammat_legacy = 10^0.7;
-gammat = gammat_legacy*(norm(baseline.hdt)^2);  % 雷达SNR门限值（新口径）
+% 统一雷达SNR门限：固定为7 dB（线性值）
+gammat = 10^(7/10);
 
 % 双模式开关：
 % 1) 每个N重采样（原始行为）
@@ -168,15 +167,10 @@ for idx = 1:length(N_range)
         Hk_scan_sr = Channel.Hu + Channel.Hru*diag(phi_scan_sr)*Channel.G;
         Hk_scan_snr = Channel.Hu + Channel.Hru*diag(phi_scan_snr)*Channel.G;
 
-        eta_fixed = select_eta(gammat,Channel,phi_fixed,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
-        eta_random = select_eta(gammat,Channel,phi_random,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
-        eta_scan_sr = select_eta(gammat,Channel,phi_scan_sr,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
-        eta_scan_snr = select_eta(gammat,Channel,phi_scan_snr,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
-
-        [Wc_fixed,wr_fixed] = design_w(Hk_fixed,Channel.hdt,Channel.hrt,Channel.G,phi_fixed,P,K,eta_fixed);
-        [Wc_random,wr_random] = design_w(Hk_random,Channel.hdt,Channel.hrt,Channel.G,phi_random,P,K,eta_random);
-        [Wc_scan_sr,wr_scan_sr] = design_w(Hk_scan_sr,Channel.hdt,Channel.hrt,Channel.G,phi_scan_sr,P,K,eta_scan_sr);
-        [Wc_scan_snr,wr_scan_snr] = design_w(Hk_scan_snr,Channel.hdt,Channel.hrt,Channel.G,phi_scan_snr,P,K,eta_scan_snr);
+        [Wc_fixed,wr_fixed] = optimize_w_for_fixed_phi(Channel,phi_fixed,P,K,L,sigmat2,sigmar2,sigmak2,gammat);
+        [Wc_random,wr_random] = optimize_w_for_fixed_phi(Channel,phi_random,P,K,L,sigmat2,sigmar2,sigmak2,gammat);
+        [Wc_scan_sr,wr_scan_sr] = optimize_w_for_fixed_phi(Channel,phi_scan_sr,P,K,L,sigmat2,sigmar2,sigmak2,gammat);
+        [Wc_scan_snr,wr_scan_snr] = optimize_w_for_fixed_phi(Channel,phi_scan_snr,P,K,L,sigmat2,sigmar2,sigmak2,gammat);
         [phi_joint,Wc_joint,Wr_joint] = run_joint_snr_optimization(Channel,P,K,L,sigmat2,sigmar2,sigmak2,gammat);
         Hk_joint = Channel.Hu + Channel.Hru*diag(phi_joint)*Channel.G;
         Wr_joint_comm = Wr_joint(:,K+1:end);
@@ -216,15 +210,10 @@ for idx = 1:length(N_range)
         Hk_scan_sr = Channel.Hu + Channel.Hru*diag(phi_scan_sr)*Channel.G;
         Hk_scan_snr = Channel.Hu + Channel.Hru*diag(phi_scan_snr)*Channel.G;
 
-        eta_fixed = select_eta(gammat,Channel,phi_fixed,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
-        eta_random = select_eta(gammat,Channel,phi_random,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
-        eta_scan_sr = select_eta(gammat,Channel,phi_scan_sr,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
-        eta_scan_snr = select_eta(gammat,Channel,phi_scan_snr,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
-
-        [Wc_fixed,wr_fixed] = design_w(Hk_fixed,Channel.hdt,Channel.hrt,Channel.G,phi_fixed,P,K,eta_fixed);
-        [Wc_random,wr_random] = design_w(Hk_random,Channel.hdt,Channel.hrt,Channel.G,phi_random,P,K,eta_random);
-        [Wc_scan_sr,wr_scan_sr] = design_w(Hk_scan_sr,Channel.hdt,Channel.hrt,Channel.G,phi_scan_sr,P,K,eta_scan_sr);
-        [Wc_scan_snr,wr_scan_snr] = design_w(Hk_scan_snr,Channel.hdt,Channel.hrt,Channel.G,phi_scan_snr,P,K,eta_scan_snr);
+        [Wc_fixed,wr_fixed] = optimize_w_for_fixed_phi(Channel,phi_fixed,P,K,L,sigmat2,sigmar2,sigmak2,gammat);
+        [Wc_random,wr_random] = optimize_w_for_fixed_phi(Channel,phi_random,P,K,L,sigmat2,sigmar2,sigmak2,gammat);
+        [Wc_scan_sr,wr_scan_sr] = optimize_w_for_fixed_phi(Channel,phi_scan_sr,P,K,L,sigmat2,sigmar2,sigmak2,gammat);
+        [Wc_scan_snr,wr_scan_snr] = optimize_w_for_fixed_phi(Channel,phi_scan_snr,P,K,L,sigmat2,sigmar2,sigmak2,gammat);
         [phi_joint,Wc_joint,Wr_joint] = run_joint_snr_optimization(Channel,P,K,L,sigmat2,sigmar2,sigmak2,gammat);
         Hk_joint = Channel.Hu + Channel.Hru*diag(phi_joint)*Channel.G;
         Wr_joint_comm = Wr_joint(:,K+1:end);

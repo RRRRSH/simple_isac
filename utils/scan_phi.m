@@ -44,14 +44,12 @@ for n = 1:N
         cand = phi;
         cand(n) = exp(1i*grid(a));
         
-        % 为候选相位选择功率分配系数
-        eta = select_eta(gammat,Channel,cand,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
-        
+        % 给定cand时，按P1约束求解最优波束：
+        % 在满足雷达SNR阈值和总功率约束下最大化通信总速率
+        [Wc,wr] = optimize_w_for_fixed_phi(Channel,cand,P,K,L,sigmat2,sigmar2,sigmak2,gammat);
+
         % 计算等效信道
         Hk = Channel.Hu + Channel.Hru*diag(cand)*Channel.G;
-        
-        % 设计波束赋形向量
-        [Wc,wr] = design_w(Hk,Channel.hdt,Channel.hrt,Channel.G,cand,P,K,eta);
         
         % 根据目标计算相应的性能指标
         if strcmp(objective,'sumrate')

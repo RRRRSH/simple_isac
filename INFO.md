@@ -11,6 +11,10 @@
 - RIS 单元数：N
 - 总发射功率：P
 - 雷达功率分配系数：eta，0 <= eta <= 1
+- 雷达 SNR 门限：
+  $$
+  \gamma_r = 10^{7/10}\;(=7\text{ dB})
+  $$
 
 功率划分：
 
@@ -140,7 +144,7 @@ $$
 $$
 
 上尝试 cand_n=e^{ja}；
-3. 每个候选相位下重新选择 eta、重算波束与目标函数；
+3. 每个候选相位下，直接求解“固定 \(\phi\) 的 SNR 约束速率最大化”得到 \((W_c,w_r)\)；
 4. 保留最优候选更新 phi_n。
 
 目标函数可选：
@@ -176,15 +180,33 @@ $$
 w_{c,k} = \sqrt{\frac{(1-\eta)P}{K}}\,\widehat{w}_{c,k}
 $$
 
-### 5.2 MRT 雷达波束
+### 5.2 雷达波束（MRT / NSP）
 
-基于去程等效信道 h_eff：
+基于去程等效信道 \(h_{\text{eff}}\)：
 
 $$
-w_r = \frac{\overline{h_{\text{eff}}}}{\|h_{\text{eff}}\|_2 + 10^{-12}}\sqrt{\eta P}
+w_r^{\text{MRT}} = \frac{\overline{h_{\text{eff}}}}{\|h_{\text{eff}}\|_2 + 10^{-12}}\sqrt{\eta P}
 $$
 
-这与最大比发射（MRT）一致。
+若采用 NSP（零空间投影），先构造用户信道零空间投影矩阵：
+
+$$
+P_\perp = I_M - H_k^H(H_kH_k^H)^\dagger H_k
+$$
+
+再将目标方向向量 \(a_t=\overline{h_{\text{eff}}}\) 投影到零空间：
+
+$$
+\widetilde{w}_r = P_\perp a_t,
+\qquad
+w_r^{\text{NSP}} =
+\begin{cases}
+\dfrac{\widetilde{w}_r}{\|\widetilde{w}_r\|_2}\sqrt{\eta P}, & \|\widetilde{w}_r\|_2>0\\
+w_r^{\text{MRT}}, & \text{否则回退}
+\end{cases}
+$$
+
+当前代码中 design_w 默认采用 NSP，可显式切换为 MRT。
 
 ## 6. 功率分配 eta 的可行性搜索（select_eta）
 
@@ -197,10 +219,24 @@ $$
 中从小到大搜索最小 eta，使雷达约束满足：
 
 $$
-g(\eta) \ge \gamma_t
+g(\eta) \ge \gamma_r
 $$
 
 若 eta=1 仍不满足，则返回 eta=1 并给出不可行警告。
+
+并且可按雷达波束模式分别搜索：
+
+$$
+\eta_{\text{mrt}} = \min\{\eta\in\mathcal{E}: g_{\text{mrt}}(\eta)\ge\gamma_r\},
+\qquad
+\eta_{\text{nsp}} = \min\{\eta\in\mathcal{E}: g_{\text{nsp}}(\eta)\ge\gamma_r\}
+$$
+
+说明：该步骤主要用于启发式基线与初始化；当前主流程中的 fixed/random/scan/joint 评估已切换为“固定 SNR 门限下的速率最大化波束优化”，即优先满足
+$$
+g\ge\gamma_r
+$$
+再优化通信总速率。
 
 ## 7. 通信性能公式（sum_rate）
 
@@ -278,8 +314,8 @@ $$
 2. 计算四种 RIS 相位：fixed、random、scan-sumrate、scan-snr
 3. 对每种相位：
    1. 计算 Hk=Hu+Hru*diag(phi)*G
-   2. 用 select_eta 找到最小可行 eta
-   3. 用 design_w 得到 (Wc, wr)
+  2. 固定门限 \(\gamma_r=7\,\text{dB}\)
+  3. 调用固定 \(\phi\) 的 SNR 约束速率最大化求解器得到 (Wc, wr)
    4. 计算 R 与 g
 4. 与无 RIS 基线比较
 
@@ -288,32 +324,45 @@ $$
 - 全局相位偏移 Delta 对性能的影响：phi = phi_base * e^{jDelta}
 - 固定 N 下 eta-SNR 与 eta-Rate 权衡曲线
 
+补充：统一入口 main_SR_all 的三线模式会比较
+
+$$
+\mathrm{No-RIS},\quad \text{RIS+MRT},\quad \text{RIS+NSP}
+$$
+
+其对应速率可记为
+
+$$
+R_{\text{nr}},\quad R_{\text{mrt}},\quad R_{\text{nsp}}
+$$
+
+并在固定门限 \(\gamma_r\) 下分别按可行性判据过滤不可行点。
+
 ## 10. 关键结论（可直接用于答辩）
 
 1. RIS 规模增大（N 上升）通常提升通信与感知两侧指标，体现无源阵列增益。
-2. eta 增大时，雷达 SNR 单调增强趋势明显，而通信速率因功率让渡与同频泄漏而下降。
+2. 在固定 \(\gamma_r=7\,\text{dB}\) 约束下，系统通过自适应波束在“满足感知下限”的同时提升通信总速率。
 3. scan-sumrate 与 scan-snr 分别对应两种优化偏好，形成可解释的性能边界。
-4. 该代码本质上实现了一个“离散 eta + 离散相位 + ZF/MRT 闭式波束”的低复杂度联合设计框架。
+4. 该代码当前核心框架是“相位搜索 + 固定 \(\phi\) 下的 SNR 约束速率优化 + 联合优化对比”。
 
 ## 11. 可以直接写进论文的方法描述（模板）
 
-可将本方法概括为如下优化问题：
+可将当前主方法概括为如下优化问题：
 
 $$
-\max_{\Phi,\,W_c,\,w_r,\,\eta}\; R(\Phi,W_c,w_r,\eta)
+\max_{\Phi,\,W_c,\,w_r}\; R(\Phi,W_c,w_r)
 $$
 
 $$
-	ext{s.t.}\quad g(\Phi,W_c,w_r,\eta)\ge\gamma_t,
+\mathrm{s.t.}\quad g(\Phi,W_c,w_r)\ge\gamma_r,
 \quad \sum_{k=1}^{K}\|w_{c,k}\|_2^2 + \|w_r\|_2^2 \le P,
 \quad |\phi_n|=1,\,\forall n,
-\quad 0\le\eta\le1
+\quad \gamma_r=10^{7/10}
 $$
 
 工程实现上采用分层近似：
 
 - 外层：逐单元离散扫描 RIS 相位；
-- 中层：离散搜索最小可行 eta；
-- 内层：给定 (phi, eta) 后使用 ZF + MRT 闭式解波束。
+- 内层：给定 \(\phi\) 后求解 \(g\ge\gamma_r\) 约束下的速率最大化波束问题。
 
 该分解避免了高维非凸联合优化的直接求解，复杂度可控且实现稳定。

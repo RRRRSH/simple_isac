@@ -63,8 +63,8 @@ Channel0.Hru = Hru;
 phi_fixed = compute_phi('fixed_target',Channel0);
 Hk_ris = Channel0.Hu + Channel0.Hru*diag(phi_fixed)*Channel0.G;
 
-gammat_legacy = 10^0.7;
-gammat = gammat_legacy*(norm(Channel0.hdt)^2);
+% 统一雷达SNR门限：固定为7 dB（线性值）
+gammat = 10^(7/10);
 eta_ris = select_eta(gammat,Channel0,phi_fixed,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
 [Wc_ris,wr_ris] = design_w(Hk_ris,Channel0.hdt,Channel0.hrt,Channel0.G,phi_fixed,P,K,eta_ris);
 

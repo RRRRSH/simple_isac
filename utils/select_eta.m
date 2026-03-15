@@ -18,8 +18,22 @@ function eta = select_eta(gammat,Channel,phi,P,K,L,sigmat2,sigmar2,varargin)
 
 % 默认不计入通信对雷达的干扰，保持历史结果兼容
 includeCommInterferenceInRadar = false;
+radarMode = 'nsp';
 if ~isempty(varargin)
-    includeCommInterferenceInRadar = varargin{1};
+    v1 = varargin{1};
+    if ischar(v1) || isstring(v1)
+        radarMode = char(v1);
+    else
+        includeCommInterferenceInRadar = logical(v1);
+    end
+end
+if numel(varargin) >= 2
+    v2 = varargin{2};
+    if ischar(v2) || isstring(v2)
+        radarMode = char(v2);
+    else
+        includeCommInterferenceInRadar = logical(v2);
+    end
 end
 
 % 计算等效用户信道
@@ -35,7 +49,7 @@ is_feasible = false;
 % 从最小的eta开始搜索，找到满足雷达SNR要求的最小eta
 for e = etas
     % 为当前eta设计波束赋形向量
-    [Wc,wr] = design_w(Hk,Channel.hdt,Channel.hrt,Channel.G,phi,P,K,e);
+    [Wc,wr] = design_w(Hk,Channel.hdt,Channel.hrt,Channel.G,phi,P,K,e,radarMode);
     
     % 计算雷达SNR
     g = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi,wr,L,sigmat2,sigmar2, ...
