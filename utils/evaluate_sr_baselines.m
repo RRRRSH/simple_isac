@@ -1,140 +1,116 @@
-function out = evaluate_sr_baselines(Channel,baseline,P,K,L,sigmat2,sigmar2,sigmak2,gammat,varargin)
-% evaluate_sr_baselines - 统一评估四种方案的通信总速率
-% 方案: Proposed(联合优化), Separate(固定相位+波束优化), Comm-only(纯通信), No-RIS
+function [out, current_state] = evaluate_sr_baselines(Channel,baseline,P,K,L,sigmat2,sigmar2,sigmak2,gammat,varargin)
+% evaluate_sr_baselines - 统一评估四种核心方案的通信总速率与雷达感知性能
+% 支持温启动：通过传入 prev_state 加速收敛并保持单调性
+
+prev_state = [];
+if numel(varargin) >= 1 && (isstruct(varargin{1}) || isempty(varargin{1}))
+    prev_state = varargin{1};
+    varargin = varargin(2:end);
+end
 
 includeRadarInterferenceInRate = false;
 includeCommInterferenceInRadar = false;
-runMode = 'all';
 if numel(varargin) >= 1
     includeRadarInterferenceInRate = logical(varargin{1});
 end
 if numel(varargin) >= 2
     includeCommInterferenceInRadar = logical(varargin{2});
 end
-if numel(varargin) >= 3
-    runMode = lower(string(varargin{3}));
-end
-
-isNoRISOnly = any(runMode == ["noris_only","no_ris_only"]);
-isNoRISVsFixed = any(runMode == ["noris_vs_fixed","no_ris_vs_fixed"]);
-isNoRISVsFixedNSPMRT = any(runMode == ["noris_vs_fixed_nsp_vs_mrt","no_ris_vs_fixed_nsp_vs_mrt"]);
 
 out = struct();
-out.rate = struct('proposed',NaN,'separate',NaN,'comm_only',NaN,'no_ris',NaN);
-out.snr = struct('proposed',NaN,'separate',NaN,'comm_only',NaN,'no_ris',NaN);
-out.feasible = struct('proposed',false,'separate',false,'comm_only',true,'no_ris',false);
-out.rate.fixed_nsp = NaN;
-out.rate.fixed_mrt = NaN;
-out.snr.fixed_nsp = NaN;
-out.snr.fixed_mrt = NaN;
-out.feasible.fixed_nsp = false;
-out.feasible.fixed_mrt = false;
-out.meta = struct('runMode',char(runMode));
+out.rate = struct('ris_joint',NaN,'ris_fixed',NaN,'ris_random',NaN,'no_ris',NaN);
+out.snr = struct('ris_joint',NaN,'ris_fixed',NaN,'ris_random',NaN,'no_ris',NaN);
+out.feasible = struct('ris_joint',false,'ris_fixed',false,'ris_random',false,'no_ris',false);
 
-if ~(isNoRISOnly || isNoRISVsFixed || isNoRISVsFixedNSPMRT)
-    % Proposed: 联合优化（相位+波束）
-    [phi_joint,Wc_joint,Wr_joint] = run_joint_snr_optimization(Channel,P,K,L,sigmat2,sigmar2,sigmak2,gammat);
+current_state = struct();
+
+M = size(Channel.Hu,2);
+
+% === 1. 先评估 RIS-Fixed (用作 Joint 的天然初值保障) ===
+fprintf('  > 评估 RIS-Fixed (固定相位)...\n');
+phi_fixed = compute_phi('fixed_target',Channel);
+W0_fixed = [];
+if ~isempty(prev_state) && isfield(prev_state,'W_fixed')
+    W0_fixed = prev_state.W_fixed;
+end
+[Wc_fixed,wr_fixed,~,~,gammat_fixed_opt] = optimize_w_for_fixed_phi(Channel,phi_fixed,P,K,L,sigmat2,sigmar2,sigmak2,gammat,W0_fixed);
+Hk_fixed = Channel.Hu + Channel.Hru*diag(phi_fixed)*Channel.G;
+current_state.W_fixed = [Wc_fixed, wr_fixed];
+out.rate.ris_fixed = sum_rate(Hk_fixed,Wc_fixed,sigmak2,wr_fixed,includeRadarInterferenceInRate);
+out.snr.ris_fixed = gammat_fixed_opt;
+out.feasible.ris_fixed = (out.snr.ris_fixed + 1e-12 >= gammat) && ~isnan(out.rate.ris_fixed);
+if ~out.feasible.ris_fixed, out.rate.ris_fixed = NaN; end
+
+% === 2. 评估 RIS-Joint (Proposed 采用 Warm-Start) ===
+fprintf('  > 评估 RIS-Joint (Proposed)...\n');
+if ~isempty(prev_state) && isfield(prev_state,'phi_joint') && isfield(prev_state,'W_joint')
+    % 绝对温启动：继承上一个 Gamma_t 物理限制点留下的最优解
+    phi0_joint = prev_state.phi_joint;
+    W0_joint = prev_state.W_joint;
+else
+    % 冷启动：直接白嫖刚刚算完的 RIS-Fixed 输出充当优质物理基带，砍掉内置初值生成
+    phi0_joint = phi_fixed;
+    W0_joint = current_state.W_fixed; 
+end
+[phi_joint,Wc_joint,Wr_joint,~,gammat_joint] = run_joint_snr_optimization(Channel,P,K,L,sigmat2,sigmar2,sigmak2,gammat,phi0_joint,W0_joint);
+Hk_joint = Channel.Hu + Channel.Hru*diag(phi_joint)*Channel.G;
+rate_joint = sum_rate(Hk_joint,Wc_joint,sigmak2,Wr_joint(:,K+1:end),includeRadarInterferenceInRate);
+feasible_joint = (gammat_joint + 1e-12 >= gammat) && ~isnan(rate_joint);
+
+% === 2b. 自愈机制：如果温启动导致无解，立刻尝试用刚算的 Fixed 结果做冷启动 ===
+if ~feasible_joint
+    fprintf('        -> [自愈] 温启动失败(可能门限过高)，尝试使用 Fixed 结果进行冷启动修复...\n');
+    phi0_cold = phi_fixed;
+    W0_cold = current_state.W_fixed;
+    [phi_joint,Wc_joint,Wr_joint,~,gammat_joint] = run_joint_snr_optimization(Channel,P,K,L,sigmat2,sigmar2,sigmak2,gammat,phi0_cold,W0_cold);
     Hk_joint = Channel.Hu + Channel.Hru*diag(phi_joint)*Channel.G;
-    Wr_radar_only = Wr_joint(:,K+1:end);
-    out.rate.proposed = sum_rate(Hk_joint,Wc_joint,sigmak2,Wr_radar_only,includeRadarInterferenceInRate);
-    out.snr.proposed = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_joint,Wr_joint,L,sigmat2,sigmar2,Wc_joint,includeCommInterferenceInRadar);
-    out.feasible.proposed = (out.snr.proposed + 1e-12 >= gammat);
-    if ~out.feasible.proposed
-        out.rate.proposed = NaN;
-    end
-
-    % Separate: 固定相位后仅优化波束
-    phi_sep = compute_phi('fixed_target',Channel);
-    [Wc_sep,wr_sep] = optimize_w_for_fixed_phi(Channel,phi_sep,P,K,L,sigmat2,sigmar2,sigmak2,gammat);
-    Hk_sep = Channel.Hu + Channel.Hru*diag(phi_sep)*Channel.G;
-    out.rate.separate = sum_rate(Hk_sep,Wc_sep,sigmak2,wr_sep,includeRadarInterferenceInRate);
-    out.snr.separate = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_sep,wr_sep,L,sigmat2,sigmar2,Wc_sep,includeCommInterferenceInRadar);
-    out.feasible.separate = (out.snr.separate + 1e-12 >= gammat);
-    if ~out.feasible.separate
-        out.rate.separate = NaN;
-    end
-
-    % Comm-only: 不加感知约束，eta=0，按sum-rate目标扫描相位
-    phi_comm = scan_phi('sumrate',Channel,P,K,L,sigmat2,sigmar2,0,sigmak2, ...
-        includeRadarInterferenceInRate,includeCommInterferenceInRadar);
-    Hk_comm = Channel.Hu + Channel.Hru*diag(phi_comm)*Channel.G;
-    [Wc_comm,~] = design_w(Hk_comm,Channel.hdt,Channel.hrt,Channel.G,phi_comm,P,K,0);
-    out.rate.comm_only = sum_rate(Hk_comm,Wc_comm,sigmak2);
-    out.snr.comm_only = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_comm,zeros(size(Channel.hdt)), ...
-        L,sigmat2,sigmar2,Wc_comm,includeCommInterferenceInRadar);
-elseif isNoRISOnly
-    % 快速模式：其他三方案不计算，按0填充便于同一数据结构出图
-    out.rate.proposed = 0;
-    out.rate.separate = 0;
-    out.rate.comm_only = 0;
-    out.snr.proposed = 0;
-    out.snr.separate = 0;
-    out.snr.comm_only = 0;
-elseif isNoRISVsFixed
-    % 双线模式：仅计算固定相位与No-RIS，跳过其余两方案
-    out.rate.proposed = 0;
-    out.rate.comm_only = 0;
-    out.snr.proposed = 0;
-    out.snr.comm_only = 0;
-
-    phi_sep = compute_phi('fixed_target',Channel);
-    % 为保证与可行性判据一致，双线快速模式采用同口径启发式固定相位波束
-    eta_sep = select_eta(gammat,Channel,phi_sep,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar,'mrt');
-    Hk_sep = Channel.Hu + Channel.Hru*diag(phi_sep)*Channel.G;
-    [Wc_sep,wr_sep] = design_w(Hk_sep,Channel.hdt,Channel.hrt,Channel.G,phi_sep,P,K,eta_sep,'mrt');
-    out.rate.separate = sum_rate(Hk_sep,Wc_sep,sigmak2,wr_sep,includeRadarInterferenceInRate);
-    out.snr.separate = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_sep,wr_sep,L,sigmat2,sigmar2,Wc_sep,includeCommInterferenceInRadar);
-    out.feasible.separate = (out.snr.separate + 1e-12 >= gammat);
-    if ~out.feasible.separate
-        out.rate.separate = NaN;
-    end
-elseif isNoRISVsFixedNSPMRT
-    % 三线模式：No-RIS / RIS+MRT / RIS+NSP
-    out.rate.proposed = 0;
-    out.rate.comm_only = 0;
-    out.rate.separate = 0;
-    out.snr.proposed = 0;
-    out.snr.comm_only = 0;
-    out.snr.separate = 0;
-
-    phi_sep = compute_phi('fixed_target',Channel);
-    Hk_sep = Channel.Hu + Channel.Hru*diag(phi_sep)*Channel.G;
-
-    eta_nsp = select_eta(gammat,Channel,phi_sep,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar,'nsp');
-    [Wc_nsp,wr_nsp] = design_w(Hk_sep,Channel.hdt,Channel.hrt,Channel.G,phi_sep,P,K,eta_nsp,'nsp');
-    out.rate.fixed_nsp = sum_rate(Hk_sep,Wc_nsp,sigmak2,wr_nsp,includeRadarInterferenceInRate);
-    out.snr.fixed_nsp = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_sep,wr_nsp,L,sigmat2,sigmar2,Wc_nsp,includeCommInterferenceInRadar);
-    out.feasible.fixed_nsp = (out.snr.fixed_nsp + 1e-12 >= gammat);
-    if ~out.feasible.fixed_nsp
-        out.rate.fixed_nsp = NaN;
-    end
-
-    eta_mrt = select_eta(gammat,Channel,phi_sep,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar,'mrt');
-    [Wc_mrt,wr_mrt] = design_w(Hk_sep,Channel.hdt,Channel.hrt,Channel.G,phi_sep,P,K,eta_mrt,'mrt');
-    out.rate.fixed_mrt = sum_rate(Hk_sep,Wc_mrt,sigmak2,wr_mrt,includeRadarInterferenceInRate);
-    out.snr.fixed_mrt = radar_snr(Channel.hdt,Channel.hrt,Channel.G,phi_sep,wr_mrt,L,sigmat2,sigmar2,Wc_mrt,includeCommInterferenceInRadar);
-    out.feasible.fixed_mrt = (out.snr.fixed_mrt + 1e-12 >= gammat);
-    if ~out.feasible.fixed_mrt
-        out.rate.fixed_mrt = NaN;
-    end
+    rate_joint = sum_rate(Hk_joint,Wc_joint,sigmak2,Wr_joint(:,K+1:end),includeRadarInterferenceInRate);
+    feasible_joint = (gammat_joint + 1e-12 >= gammat) && ~isnan(rate_joint);
 end
 
-% No-RIS: 仅基站波束，不使用RIS
+current_state.phi_joint = phi_joint;
+current_state.W_joint = Wr_joint;
+out.rate.ris_joint = rate_joint;
+out.snr.ris_joint = gammat_joint;
+out.feasible.ris_joint = feasible_joint;
+if ~out.feasible.ris_joint, out.rate.ris_joint = NaN; end
+
+% === 3. 评估 RIS-Random ===
+fprintf('  > 评估 RIS-Random (随机相位)...\n');
+% 维持随机初值的生命周期，确保跨步长扫描时是同一套障碍空间环境配置
+if ~isempty(prev_state) && isfield(prev_state,'phi_random')
+    phi_random = prev_state.phi_random;
+else
+    phi_random = compute_phi('random',Channel);
+end
+W0_random = [];
+if ~isempty(prev_state) && isfield(prev_state,'W_random')
+    W0_random = prev_state.W_random;
+end
+[Wc_random,wr_random,~,~,gammat_random_opt] = optimize_w_for_fixed_phi(Channel,phi_random,P,K,L,sigmat2,sigmar2,sigmak2,gammat,W0_random);
+Hk_random = Channel.Hu + Channel.Hru*diag(phi_random)*Channel.G;
+current_state.phi_random = phi_random;
+current_state.W_random = [Wc_random, wr_random];
+out.rate.ris_random = sum_rate(Hk_random,Wc_random,sigmak2,wr_random,includeRadarInterferenceInRate);
+out.snr.ris_random = gammat_random_opt;
+out.feasible.ris_random = (out.snr.ris_random + 1e-12 >= gammat) && ~isnan(out.rate.ris_random);
+if ~out.feasible.ris_random, out.rate.ris_random = NaN; end
+
+% === 4. 评估 No-RIS ===
+fprintf('  > 评估 No-RIS (纯基站)...\n');
+Channel_nr.hdt = baseline.hdt; Channel_nr.Hu = baseline.Hu;
+Channel_nr.hrt = 0; Channel_nr.G = zeros(1,M); Channel_nr.Hru = zeros(K,1);
+phi_nr = 1;
+W0_nr = [];
+if ~isempty(prev_state) && isfield(prev_state,'W_noris')
+    W0_nr = prev_state.W_noris;
+end
+[Wc_nr,wr_nr,~,~,gammat_nr_opt] = optimize_w_for_fixed_phi(Channel_nr,phi_nr,P,K,L,sigmat2,sigmar2,sigmak2,gammat,W0_nr);
 Hk_nr = baseline.Hu;
-eta_nr = 1;
-for e = 0:0.05:1
-    [Wc_tmp,wr_tmp] = design_w(Hk_nr,baseline.hdt,0,zeros(1,size(Hk_nr,2)),1,P,K,e,'mrt');
-    snr_tmp = radar_snr_noris(baseline.hdt,wr_tmp,L,sigmat2,sigmar2,Wc_tmp,includeCommInterferenceInRadar);
-    if snr_tmp >= gammat
-        eta_nr = e;
-        break;
-    end
-end
-[Wc_nr,wr_nr] = design_w(Hk_nr,baseline.hdt,0,zeros(1,size(Hk_nr,2)),1,P,K,eta_nr,'mrt');
+current_state.W_noris = [Wc_nr, wr_nr];
 out.rate.no_ris = sum_rate(Hk_nr,Wc_nr,sigmak2,wr_nr,includeRadarInterferenceInRate);
-out.snr.no_ris = radar_snr_noris(baseline.hdt,wr_nr,L,sigmat2,sigmar2,Wc_nr,includeCommInterferenceInRadar);
-out.feasible.no_ris = (out.snr.no_ris + 1e-12 >= gammat);
-if ~out.feasible.no_ris
-    out.rate.no_ris = NaN;
-end
+out.snr.no_ris = gammat_nr_opt;
+out.feasible.no_ris = (out.snr.no_ris + 1e-12 >= gammat) && ~isnan(out.rate.no_ris);
+if ~out.feasible.no_ris, out.rate.no_ris = NaN; end
+
 end

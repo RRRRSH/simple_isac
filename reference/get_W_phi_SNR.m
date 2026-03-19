@@ -12,14 +12,6 @@ function [W,phi,Vsr,gammat_r] = get_W_phi_SNR(Prms,Channel,phi,W)
 M = Prms.M; N = Prms.N; K = Prms.K; sigmar2 = Prms.sigmar2; sigmak2 = Prms.sigmak2;
 sigmat2 = Prms.sigmat2; Nmax = Prms.Nmax; res_th = Prms.res_th; nL = Prms.L;
 gammat = Prms.gammat; P = Prms.P; hdt = Channel.hdt;hrt = Channel.hrt; G = Channel.G; Hu = Channel.Hu; Hru = Channel.Hru;
-freezePhi = false;
-if isfield(Prms,'freezePhi')
-    freezePhi = logical(Prms.freezePhi);
-end
-verbose = false;
-if isfield(Prms,'verbose')
-    verbose = logical(Prms.verbose);
-end
 
 %%%% variable follow phi
 Hk = Hu + Hru*diag(phi)*G;
@@ -30,20 +22,16 @@ for k = 1:1:K
     r(k) = abs(Hk(k,:)*W(:,k))^2/(norm(Hk(k,:)*W,2)^2-abs(Hk(k,:)*W(:,k))^2+sigmak2);
     c(k) = sqrt(1+r(k))*Hk(k,:)*W(:,k)/(norm(Hk(k,:)*W,2)^2+sigmak2);
 end
-u_den = real((vec(W))'*(kron(eye(K+M),Ht'*Ht))*vec(W));
-if u_den < 1e-20, u_den = 1e-20; end
-u = kron(eye(K+M),Ht)*vec(W)/u_den;
+u = kron(eye(K+M),Ht)*vec(W)/((vec(W))'*(kron(eye(K+M),Ht'*Ht))*vec(W));
 e3 = sqrt(real(gammat*sigmar2*u'*u)/sigmat2/nL);
 D = zeros(N,N);
 g = zeros(N,1);
-if ~freezePhi
-    for k = 1:1:K
-        g = g + 2*sqrt(1+r(k))*c(k)*diag(W(:,k)'*G')*Hru(k,:)';
-        for j = 1:1:K+M
-            temp = diag(W(:,j)'*G')*Hru(k,:)';
-            D = D + abs(c(k))^2*(temp*temp');
-            g = g - 2*abs(c(k))^2*diag(W(:,j)'*G')*Hru(k,:)'*Hu(k,:)*W(:,j);
-        end
+for k = 1:1:K
+    g = g + 2*sqrt(1+r(k))*c(k)*diag(W(:,k)'*G')*Hru(k,:)';
+    for j = 1:1:K+M
+        temp = diag(W(:,j)'*G')*Hru(k,:)';
+        D = D + abs(c(k))^2*(temp*temp');
+        g = g - 2*abs(c(k))^2*diag(W(:,j)'*G')*Hru(k,:)'*Hu(k,:)*W(:,j);
     end
 end
 
@@ -55,64 +43,48 @@ Vres = zeros(1,Nmax);
 Vgammat = zeros(1,Nmax);
 mu = zeros(N,1);
 varphi = phi;
-if ~freezePhi
-    den_rho = abs(phi'*D*phi-real(g'*phi));
-    if den_rho < 1e-12, den_rho = 1e-12; end
-    rho = N/den_rho;
-end
-
+rho = N/abs(phi'*D*phi-real(g'*phi));
 while iter <= Nmax && res >= res_th
-    fprintf('        -> 迭代 %d: ', iter);
-    if ~freezePhi
-        fprintf('优化 RIS 相位... ');
-        %%%% update reflecting coefficients phi
-        D = zeros(N,N);
-        g = zeros(N,1);
-        for k = 1:1:K
-            g = g + 2*sqrt(1+r(k))*c(k)*diag(W(:,k)'*G')*Hru(k,:)';
-            for j = 1:1:K+M
-                temp = diag(W(:,j)'*G')*Hru(k,:)';
-                D = D + abs(c(k))^2*(temp*temp');
-                g = g - 2*abs(c(k))^2*diag(W(:,j)'*G')*Hru(k,:)'*Hu(k,:)*W(:,j);
-            end
+    %%%% update reflecting coefficients phi
+    D = zeros(N,N);
+    g = zeros(N,1);
+    for k = 1:1:K
+        g = g + 2*sqrt(1+r(k))*c(k)*diag(W(:,k)'*G')*Hru(k,:)';
+        for j = 1:1:K+M
+            temp = diag(W(:,j)'*G')*Hru(k,:)';
+            D = D + abs(c(k))^2*(temp*temp');
+            g = g - 2*abs(c(k))^2*diag(W(:,j)'*G')*Hru(k,:)'*Hu(k,:)*W(:,j);
         end
-        F = kron(W.'*hdt,G.'*diag(hrt)) + kron(W.'*G.'*diag(hrt),hdt);
-        L = kron(W.'*G.'*diag(hrt),G.'*diag(hrt));
-        Ltilde = reshape(L.'*conj(u),N,N);
-        Lbar = [-real(Ltilde) imag(Ltilde);imag(Ltilde) real(Ltilde)];
-        [~,bb] = eigsort(Lbar+Lbar.');
-        lambda = bb(1,1);
-        phibar = [real(phi);imag(phi)];
-        uth = -u'*F + phibar.'*(Lbar+Lbar.'-lambda*eye(2*N))*[eye(N);-1i*eye(N)];
-        e4 = -e3 + phibar.'*Lbar.'*phibar + real(u'*kron(eye(K+M),hdt*hdt.')*vec(W))-lambda*N;
-        cvx_begin quiet
-        cvx_solver SeDuMi
-        variable phi(N,1) complex
-        minimize real(phi'*D*phi)-real(g'*phi) + 0.5/rho*square_pos(norm(phi-varphi+mu*rho,2))
-        subject to
-        real(uth*phi) <= e4;
-        abs(phi) <= 1;
-        cvx_end
-        
-        if ~strcmpi(cvx_status, 'Solved') && ~strcmpi(cvx_status, 'Inaccurate/Solved')
-            fprintf('无解(Infeasible)! 终止交替.\n');
-            break;
-        end
-        fprintf('完成. ');
-
-        %%%% update varphi
-        varphi = exp(1i*angle(phi+mu*rho));
-
-        %%% update mu
-        mu = mu + (phi-varphi)/rho;
     end
+    F = kron(W.'*hdt,G.'*diag(hrt)) + kron(W.'*G.'*diag(hrt),hdt);
+    L = kron(W.'*G.'*diag(hrt),G.'*diag(hrt));
+    Ltilde = reshape(L.'*conj(u),N,N);
+    Lbar = [-real(Ltilde) imag(Ltilde);imag(Ltilde) real(Ltilde)];
+    [~,bb] = eigsort(Lbar+Lbar.');
+    lambda = bb(1,1);
+    phibar = [real(phi);imag(phi)];
+    uth = -u'*F + phibar.'*(Lbar+Lbar.'-lambda*eye(2*N))*[eye(N);-1i*eye(N)];
+    e4 = -e3 + phibar.'*Lbar.'*phibar + real(u'*kron(eye(K+M),hdt*hdt.')*vec(W))-lambda*N;
+    cvx_begin quiet
+    cvx_solver SeDuMi
+    variable phi(N,1) complex
+    minimize real(phi'*D*phi)-real(g'*phi) + 0.5/rho*square_pos(norm(phi-varphi+mu*rho,2))
+    subject to
+    real(uth*phi) <= e4;
+    abs(phi) <= 1;
+    cvx_end
+
+    %%%% update varphi
+    varphi = exp(1i*angle(phi+mu*rho));
+
+    %%% update mu
+    mu = mu + (phi-varphi)/rho;
 
     %%%% variable follow phi
     Hk = Hu + Hru*diag(phi)*G;
     Ht = (hdt + G.'*diag(phi)*hrt)*(hdt.' + hrt.'*diag(phi)*G);
 
     %%%%% update transmit beamformer w
-    fprintf('优化 基站波束... ');
     a = zeros(M*(K+M),1);
     B = zeros(K*(K+M),M*(K+M));
     for k = 1:1:K
@@ -132,19 +104,10 @@ while iter <= Nmax && res >= res_th
     real(u'*kHt*w) >= e3;
     norm(w,2) <= sqrt(P);
     cvx_end
-    
-    if ~strcmpi(cvx_status, 'Solved') && ~strcmpi(cvx_status, 'Inaccurate/Solved')
-        fprintf('无解(Infeasible)! 终止交替.\n');
-        break;
-    end
-    fprintf('完成.\n');
-    
     W = reshape(w,M,K+M);
 
     %%%% update receive filter u
-    u_den = real((vec(W))'*(kron(eye(K+M),Ht'*Ht))*vec(W));
-    if u_den < 1e-20, u_den = 1e-20; end
-    u = kron(eye(K+M),Ht)*vec(W)/u_den;
+    u = kron(eye(K+M),Ht)*vec(W)/((vec(W))'*(kron(eye(K+M),Ht'*Ht))*vec(W));
     e3 = sqrt(real(gammat*sigmar2*u'*u)/sigmat2/nL);
 
     %%%% update auxiliary variables
@@ -156,34 +119,18 @@ while iter <= Nmax && res >= res_th
     end
 
     Vsr(iter) = sum(log2(1+r));
-    if freezePhi
-        Vres(iter) = 0;
-    else
-        Vres(iter) = norm(phi-varphi,2)^2;
-    end
+    Vres(iter) = norm(phi-varphi,2)^2;
     Vgammat(iter) = real(nL*sigmat2*abs(u'*kron(eye(K+M),Ht)*w)^2/(sigmar2*u'*u));
-    if verbose
-        fprintf('[get_W_phi_SNR] iter=%d/%d, sumrate=%.6f, snr=%.6f, res=%.3e\n', ...
-            iter,Nmax,Vsr(iter),Vgammat(iter),res);
-    end
     if iter > 10
         res = abs(Vsr(iter)-Vsr(iter-1))/Vsr(iter-1);
     end
     iter = iter + 1;
-    if ~freezePhi
-        rho = rho*0.8;
-    end
+    rho = rho*0.8;
 end
 Vsr(iter:end) = [];
 Vres(iter:end) = [];
 Vgammat(iter:end) = [];
 gammat_r = real(nL*sigmat2*abs(u'*kron(eye(K+M),Ht)*w)^2/(sigmar2*u'*u));
-
-if ~isempty(Vsr)
-    fprintf('      已收敛. 最终参数: SR=%.4f, SNR=%.2f dB\n', Vsr(end), 10*log10(abs(gammat_r)+1e-12));
-else
-    fprintf('      刚启动即退出. \n');
-end
 % figure;grid on
 % subplot(3,1,1)
 % plot(Vsr);title('sum-rate');legend('Proposed')

@@ -41,27 +41,35 @@ Channel.G = ris.G;
 Channel.Hru = ris.Hru;
 phi_fixed = compute_phi('fixed_target',Channel);
 Hk_ris = Channel.Hu + Channel.Hru*diag(phi_fixed)*Channel.G;
+sigmak2 = 1e-12;
 
-% RIS + MRT
-eta_mrt = select_eta(gammat,Channel,phi_fixed,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar,'mrt');
-[Wc_mrt,wr_mrt] = design_w(Hk_ris,Channel.hdt,Channel.hrt,Channel.G,phi_fixed,P,K,eta_mrt,'mrt');
+% RIS + 优化波束（默认NSP初值）
+[Wc_nsp,wr_nsp] = optimize_w_for_fixed_phi(Channel,phi_fixed,P,K,L,sigmat2,sigmar2,sigmak2,gammat);
 
-% RIS + NSP
-eta_nsp = select_eta(gammat,Channel,phi_fixed,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar,'nsp');
-[Wc_nsp,wr_nsp] = design_w(Hk_ris,Channel.hdt,Channel.hrt,Channel.G,phi_fixed,P,K,eta_nsp,'nsp');
-
-% No-RIS baseline
-Hk_nr = baseline.Hu;
-eta_nr = 1;
-for e = 0:0.05:1
-    [Wc_tmp,wr_tmp] = design_w(Hk_nr,baseline.hdt,0,zeros(1,M),1,P,K,e,'mrt');
-    snr_tmp = radar_snr_noris(baseline.hdt,wr_tmp,L,sigmat2,sigmar2,Wc_tmp,includeCommInterferenceInRadar);
-    if snr_tmp >= gammat
-        eta_nr = e;
-        break;
-    end
+% RIS + 优化波束（MRT初值）
+eta0_mrt = 0.5;
+[Wc0_mrt,wr0_mrt] = design_w(Hk_ris,Channel.hdt,Channel.hrt,Channel.G,phi_fixed,P,K,eta0_mrt,'mrt');
+W0_mrt = [Wc0_mrt, wr0_mrt, zeros(M,max(M-1,0))];
+Prms.M = M; Prms.N = N; Prms.K = K;
+Prms.sigmar2 = sigmar2; Prms.sigmak2 = sigmak2; Prms.sigmat2 = sigmat2;
+Prms.Nmax = 40; Prms.res_th = 1e-3; Prms.L = L;
+Prms.gammat = gammat; Prms.P = P; Prms.freezePhi = true;
+try
+    [W_mrt,~,~,~] = get_W_phi_SNR(Prms,Channel,phi_fixed,W0_mrt);
+catch
+    W_mrt = W0_mrt;
 end
-[Wc_nr,wr_nr] = design_w(Hk_nr,baseline.hdt,0,zeros(1,M),1,P,K,eta_nr,'mrt');
+Wc_mrt = W_mrt(:,1:K);
+wr_mrt = W_mrt(:,K+1:end);
+
+% No-RIS baseline: 通过退化信道使用优化器
+Channel_nr.hdt = baseline.hdt;
+Channel_nr.Hu = baseline.Hu;
+Channel_nr.hrt = 0;
+Channel_nr.G = zeros(1,M);
+Channel_nr.Hru = zeros(K,1);
+phi_nr = 1;
+[Wc_nr,wr_nr] = optimize_w_for_fixed_phi(Channel_nr,phi_nr,P,K,L,sigmat2,sigmar2,sigmak2,gammat);
 
 allPts = [scene.bs; scene.ris; scene.target; scene.users];
 margin = 10;

@@ -131,37 +131,11 @@ title('No-RIS Radar Beampattern');
 print(fig3, fullfile(outDir,'beampattern_noris.png'), '-dpng','-r300');
 savefig(fig3, fullfile(outDir,'beampattern_noris.fig'));
 
-fprintf('[7/8] 生成No-RIS eta权衡图...\n');
-etas = 0:0.05:1;
-SR_eta = zeros(size(etas));
-SNR_eta = zeros(size(etas));
-for i = 1:numel(etas)
-    [Wc_i,wr_i] = design_w(Hk_noris,Channel.hdt,0,zeros(1,M),1,P,K,etas(i));
-    SR_eta(i) = sum_rate(Hk_noris,Wc_i,sigmak2,wr_i,false);
-    SNR_eta(i) = radar_snr_noris(Channel.hdt,wr_i,L,sigmat2,sigmar2,Wc_i,false);
-end
-
-fig4 = figure('Color','w');
-set(fig4,'Position',[200 120 640 760]);
-subplot(2,1,1);
-plot(etas,10*log10(SNR_eta + 1e-13),'-','LineWidth',1.5,'Color',[0.80,0.10,0.10]);
-hold on; grid on;
-yline(10*log10(gammat),'--k','7 dB threshold','LabelHorizontalAlignment','left');
-xlabel('\eta'); ylabel('Radar SNR (dB)');
-title('No-RIS eta tradeoff');
-subplot(2,1,2);
-plot(etas,SR_eta,'-','LineWidth',1.5,'Color',[0.10,0.50,0.10]);
-grid on;
-xlabel('\eta'); ylabel('Sum-rate (bps/Hz)');
-print(fig4, fullfile(outDir,'eta_tradeoff_noris.png'), '-dpng','-r300');
-savefig(fig4, fullfile(outDir,'eta_tradeoff_noris.fig'));
-
-fprintf('[8/8] 保存数据并输出汇总...\n');
+fprintf('[7/7] 保存数据并输出汇总...\n');
 save(fullfile(outDir,'noris_full_data.mat'), ...
     'M','K','L','P','gammat','x_range','y_range','X','Y', ...
     'P_rad_NoRIS','P_total_NoRIS','P_rad_NoRIS_dB','P_total_NoRIS_dB', ...
     'thetaScanDeg','gain_noris','gain_noris_dB', ...
-    'etas','SR_eta','SNR_eta', ...
     'SR','gammat_opt','SNR_legacy','ptotal','Vsr_opt','scene');
 
 fprintf('\n===== No-RIS Full Result Summary =====\n');

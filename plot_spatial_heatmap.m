@@ -20,6 +20,7 @@ fprintf('Results will be saved to: %s\n', outDir);
 % System parameters (consistent with run_simple_isac)
 M = 6;
 K = 2;
+sigmak2 = 1e-12;
 L = 1024;
 sigmar2 = 1e-12;
 sigmat2 = 1;
@@ -59,28 +60,21 @@ Channel0.hrt = hrt;
 Channel0.G = G;
 Channel0.Hru = Hru;
 
-% Fixed-target RIS phase and beams
+% Fixed-target RIS phase and beams (CVX优化)
 phi_fixed = compute_phi('fixed_target',Channel0);
-Hk_ris = Channel0.Hu + Channel0.Hru*diag(phi_fixed)*Channel0.G;
 
 % 统一雷达SNR门限：固定为7 dB（线性值）
 gammat = 10^(7/10);
-eta_ris = select_eta(gammat,Channel0,phi_fixed,P,K,L,sigmat2,sigmar2,includeCommInterferenceInRadar);
-[Wc_ris,wr_ris] = design_w(Hk_ris,Channel0.hdt,Channel0.hrt,Channel0.G,phi_fixed,P,K,eta_ris);
+[Wc_ris,wr_ris] = optimize_w_for_fixed_phi(Channel0,phi_fixed,P,K,L,sigmat2,sigmar2,sigmak2,gammat);
 
-% No-RIS beams
-Hk_noris = Channel0.Hu;
-G_noris = zeros(1,M);
+% No-RIS beams: 通过退化信道使用优化器
+Channel_nr.hdt = Channel0.hdt;
+Channel_nr.Hu = Channel0.Hu;
+Channel_nr.hrt = 0;
+Channel_nr.G = zeros(1,M);
+Channel_nr.Hru = zeros(K,1);
 phi_noris = 1;
-eta_noris = 0;
-for e = 0:0.05:1
-    [Wc_tmp,wr_tmp] = design_w(Hk_noris,Channel0.hdt,0,G_noris,phi_noris,P,K,e);
-    if radar_snr_noris(Channel0.hdt,wr_tmp,L,sigmat2,sigmar2,Wc_tmp,includeCommInterferenceInRadar) >= gammat
-        eta_noris = e;
-        break;
-    end
-end
-[~,wr_noris] = design_w(Hk_noris,Channel0.hdt,0,G_noris,phi_noris,P,K,eta_noris);
+[~,wr_noris] = optimize_w_for_fixed_phi(Channel_nr,phi_noris,P,K,L,sigmat2,sigmar2,sigmak2,gammat);
 
 % 2D virtual space grid (fixed for reproducible visual comparison)
 allPts = [scene.bs; scene.ris; scene.target; scene.users];
