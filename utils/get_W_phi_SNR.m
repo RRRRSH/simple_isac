@@ -177,7 +177,7 @@ end
 Vsr(iter:end) = [];
 Vres(iter:end) = [];
 Vgammat(iter:end) = [];
-gammat_r = real(nL*sigmat2*abs(u'*kron(eye(K+M),Ht)*w)^2/(sigmar2*u'*u));
+gammat_r = real(nL*sigmat2*abs(u'*kron(eye(K+M),Ht)*vec(W))^2/(sigmar2*u'*u));
 
 if ~isempty(Vsr)
     fprintf('      已收敛. 最终参数: SR=%.4f, SNR=%.2f dB\n', Vsr(end), 10*log10(abs(gammat_r)+1e-12));

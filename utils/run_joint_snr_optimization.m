@@ -38,8 +38,8 @@ try
     [W_joint,phi_joint,Vsr_joint,gammat_joint] = get_W_phi_SNR(Prms,Channel,phi0,W0);
 catch ME
     cvx_clear;
-    warning('run_joint_snr_optimization:SolverFailed', ...
-        '联合优化失败，退化为初值方案。原因: %s', ME.message);
+    fprintf('\n=> [FATAL ERROR] 联合优化抛出异常: %s\n', ME.message);
+    fprintf('=>        [Stack] File: %s, Line: %d\n\n', ME.stack(1).file, ME.stack(1).line);
     W_joint = W0;
     phi_joint = phi0;
     Vsr_joint = sum_rate(Hk0,Wc0,sigmak2,wr0,false);
